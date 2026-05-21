@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "insightagent"
+version = "2.0.0"
+description = "A versioned research coding agent framework."
+requires-python = ">=3.10"
+readme = "README.md"
+authors = [
+  { name = "InsightAgent contributors" }
+]
+
+[project.scripts]
+insightagent = "insightagent.cli:main"
+
+[tool.setuptools]
+packages = ["insightagent"]
