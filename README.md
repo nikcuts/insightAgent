@@ -23,6 +23,8 @@ V5.0 keeps all V4 behavior and adds:
 - interactive CLI with `/status`, `/cost`, `/memory`, `/compact`, `/clear`, `/permissions`, `/export`
 - `run_task` integration with sessions and config
 - task lifecycle state machine: `plan -> implement -> verify -> repair -> summarize`
+- structured tool package with Python code-analysis tools: `parse_ast`, `get_function_signature`,
+  `find_dependencies`, and `get_code_metrics`
 
 This is the first version that behaves like a stateful runtime rather than a one-off demo script.
 
@@ -37,6 +39,14 @@ slash_commands.py  # slash command dispatcher
 agent.py           # agent loop with usage + session sync
 run_task.py        # non-interactive task runner
 cli.py             # interactive REPL
+tools/             # execution, file, search, state, and code-analysis tools
+  base.py
+  execution_tools.py
+  file_tools.py
+  search_tools.py
+  state_tools.py
+  code_analysis_tools.py
+  registry.py
 ```
 
 The V5 flow:
@@ -227,14 +237,14 @@ V5.0 is much less toy-like than V1-V4, but it is still not a full Claude Code re
 ## Tests
 
 ```bash
-python3 -m py_compile insightagent/*.py tests/*.py
+python3 -m py_compile $(find insightagent tests -name '*.py' -print)
 python3 -m unittest discover -s tests -v
 ```
 
 Expected result:
 
 ```text
-Ran 37 tests
+Ran 42 tests
 OK
 ```
 
@@ -256,6 +266,7 @@ Test coverage includes:
 - `git_status` and `git_diff`
 - `todo_write`
 - best-effort `lsp_diagnostics`
+- Python code-analysis tools: `parse_ast`, `get_function_signature`, `find_dependencies`, `get_code_metrics`
 - usage estimation
 
 ## Next Work

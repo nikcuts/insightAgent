@@ -22,6 +22,10 @@ class ExtendedToolTests(unittest.TestCase):
         self.assertIn("git_diff", names)
         self.assertIn("todo_write", names)
         self.assertIn("lsp_diagnostics", names)
+        self.assertIn("parse_ast", names)
+        self.assertIn("get_function_signature", names)
+        self.assertIn("find_dependencies", names)
+        self.assertIn("get_code_metrics", names)
 
     def test_glob_search_returns_matching_workspace_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
