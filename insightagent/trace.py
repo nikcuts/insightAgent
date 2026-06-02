@@ -82,6 +82,23 @@ class ConsoleTracer:
                     f"repairs={event['repair_attempts']} verifications={event['verification_attempts']}"
                 ),
             )
+        elif event_type == "mcp_config_loaded":
+            loaded = ", ".join(event.get("loaded_config_files") or []) or "none"
+            self._section("MCP CONFIG", f"config_files={loaded}")
+        elif event_type == "mcp_server_starting":
+            self._section("MCP STARTING", f"{event['server']} transport={event.get('transport')}")
+        elif event_type == "mcp_server_started":
+            self._section(
+                "MCP STARTED",
+                (
+                    f"{event['server']} tools={event.get('tools', 0)} "
+                    f"resources={event.get('resources', 0)} prompts={event.get('prompts', 0)}"
+                ),
+            )
+        elif event_type == "mcp_server_failed":
+            self._section("MCP FAILED", f"{event['server']}: {event.get('error', '')}")
+        elif event_type == "mcp_server_stopped":
+            self._section("MCP STOPPED", event["server"])
 
     def _section(self, title: str, body: str) -> None:
         print(f"\n--- {title} ---")

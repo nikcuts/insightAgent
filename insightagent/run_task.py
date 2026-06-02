@@ -10,11 +10,13 @@ from pathlib import Path
 from .agent import CodeAgent
 from .config import RuntimeConfig, load_runtime_config
 from .context import ContextManager, ProjectMemory, build_system_prompt, load_project_memory
+from .mcp.config import load_mcp_config
+from .mcp.manager import MCPManager
 from .providers import AnthropicClient, OpenAICompatibleClient, ProviderError
 from .session import Session, SessionStore
 from .smoke import SILICONFLOW_BASE_URL, SILICONFLOW_DEFAULT_MODEL
 from .tool_context import ToolContext
-from .tools import ToolRegistry
+from .tools import ToolRegistry, default_tools
 from .trace import ConsoleTracer
 
 
@@ -63,6 +65,7 @@ def build_agent(
     project_memory: ProjectMemory,
     session_store: SessionStore,
     session: Session,
+    tools: ToolRegistry | None = None,
 ) -> CodeAgent:
     base_system_prompt = f"""You are InsightAgent V5.0, a complete coding-agent runtime with sessions, config, usage tracking, project memory, grep search, self-healing, and workspace-safe tools.
 You are running a real coding-task demo.
@@ -91,10 +94,9 @@ When running shell commands, set cwd to this workspace when possible."""
         if not os.environ.get("OPENAI_API_KEY"):
             raise ProviderError("OPENAI_API_KEY is required for provider=openai")
         client = OpenAICompatibleClient(model=config.model, base_url=config.base_url, timeout=config.timeout)
-    tool_context = ToolContext(workspace=workspace, permission_mode=config.permission_mode)
     return CodeAgent(
         client,
-        tools=ToolRegistry(context=tool_context),
+        tools=tools,
         context_manager=ContextManager(
             max_tool_output_chars=config.max_tool_output_chars,
             compact_tool_output_chars=config.compact_tool_output_chars,
@@ -140,17 +142,6 @@ def main() -> None:
     )
     project_memory = load_project_memory(workspace)
     task = f"{args.task}\n\nWorkspace absolute path: {workspace}"
-    try:
-        agent = build_agent(
-            config,
-            workspace,
-            project_memory,
-            session_store,
-            session,
-        )
-    except ProviderError as error:
-        print(f"\nProvider error: {error}", file=sys.stderr)
-        raise SystemExit(2) from error
     tracer = None if args.no_trace else ConsoleTracer(max_chars=config.trace_max_chars)
     if tracer is not None:
         tracer(
@@ -168,13 +159,31 @@ def main() -> None:
                 "files": [filename for filename, _content in project_memory.sections],
             }
         )
-    if args.allow_no_tool_final:
-        agent.require_tool_use = False
+    tool_context = ToolContext(workspace=workspace, permission_mode=config.permission_mode)
+    mcp_config_home = Path(args.config_home).expanduser() if args.config_home else None
+    mcp_config = load_mcp_config(workspace, user_config_home=mcp_config_home)
+    if tracer is not None:
+        tracer({"type": "mcp_config_loaded", "loaded_config_files": mcp_config.loaded_files})
+    mcp_manager = MCPManager(mcp_config)
+    mcp_manager.start_enabled(trace=tracer)
+    tools = ToolRegistry(tools=default_tools(tool_context) + mcp_manager.get_tools(), context=tool_context)
     try:
+        agent = build_agent(
+            config,
+            workspace,
+            project_memory,
+            session_store,
+            session,
+            tools=tools,
+        )
+        if args.allow_no_tool_final:
+            agent.require_tool_use = False
         result = agent.run_turn_with_trace(task, trace=tracer)
     except ProviderError as error:
         print(f"\nProvider error: {error}", file=sys.stderr)
         raise SystemExit(2) from error
+    finally:
+        mcp_manager.stop_all(trace=tracer)
     if args.no_trace:
         print(result.content)
     if args.export_transcript:

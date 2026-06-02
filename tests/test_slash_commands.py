@@ -38,6 +38,7 @@ class SlashCommandTests(unittest.TestCase):
             self.assertIn("compacted_messages=", slash.handle("/compact"))
             self.assertIn("permission_mode=", slash.handle("/permissions"))
             self.assertIn("exported=", slash.handle(f"/export {workspace / 'out.md'}"))
+            self.assertIn("/mcp", slash.handle("/help"))
             self.assertTrue((workspace / "out.md").is_file())
 
 

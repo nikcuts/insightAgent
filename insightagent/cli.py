@@ -9,12 +9,14 @@ from pathlib import Path
 from .config import load_runtime_config
 from .context import ContextManager, build_system_prompt, load_project_memory
 from .agent import CodeAgent
+from .mcp.config import load_mcp_config
+from .mcp.manager import MCPManager
 from .providers import AnthropicClient, OpenAICompatibleClient
 from .session import SessionStore
 from .slash_commands import SlashCommandProcessor
 from .smoke import SILICONFLOW_BASE_URL, SILICONFLOW_DEFAULT_MODEL
 from .tool_context import ToolContext
-from .tools import ToolRegistry
+from .tools import ToolRegistry, default_tools
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -68,9 +70,13 @@ Use workspace-safe tools. Use slash commands only when the user types them direc
     else:
         client = OpenAICompatibleClient(model=config.model, base_url=config.base_url, timeout=config.timeout)
 
+    tool_context = ToolContext(workspace=workspace, permission_mode=config.permission_mode)
+    mcp_config_home = Path(args.config_home).expanduser() if args.config_home else None
+    mcp_manager = MCPManager(load_mcp_config(workspace, user_config_home=mcp_config_home))
+    mcp_manager.start_enabled()
     agent = CodeAgent(
         client,
-        tools=ToolRegistry(context=ToolContext(workspace=workspace, permission_mode=config.permission_mode)),
+        tools=ToolRegistry(tools=default_tools(tool_context) + mcp_manager.get_tools(), context=tool_context),
         context_manager=ContextManager(
             max_tool_output_chars=config.max_tool_output_chars,
             compact_tool_output_chars=config.compact_tool_output_chars,
@@ -80,24 +86,32 @@ Use workspace-safe tools. Use slash commands only when the user types them direc
         session_store=session_store,
         session=session,
     )
-    slash = SlashCommandProcessor(agent, session_store=session_store, project_memory=project_memory)
+    slash = SlashCommandProcessor(
+        agent,
+        session_store=session_store,
+        project_memory=project_memory,
+        mcp_manager=mcp_manager,
+    )
 
     print(f"InsightAgent V5.0 session={session.session_id}. Type 'exit' or 'quit' to stop. Try /help.")
-    while True:
-        try:
-            user_input = input("\nuser> ").strip()
-        except EOFError:
-            print()
-            break
-        if user_input.lower() in {"exit", "quit"}:
-            break
-        if not user_input:
-            continue
-        if user_input.startswith("/"):
-            print(f"\n{slash.handle(user_input)}")
-            continue
-        result = agent.run_turn(user_input)
-        print(f"\nassistant> {result.content}")
+    try:
+        while True:
+            try:
+                user_input = input("\nuser> ").strip()
+            except EOFError:
+                print()
+                break
+            if user_input.lower() in {"exit", "quit"}:
+                break
+            if not user_input:
+                continue
+            if user_input.startswith("/"):
+                print(f"\n{slash.handle(user_input)}")
+                continue
+            result = agent.run_turn(user_input)
+            print(f"\nassistant> {result.content}")
+    finally:
+        mcp_manager.stop_all()
 
 
 if __name__ == "__main__":
