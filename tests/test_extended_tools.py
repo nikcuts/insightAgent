@@ -7,7 +7,16 @@ import unittest
 from pathlib import Path
 
 from insightagent.tool_context import PermissionDenied, ToolContext
-from insightagent.tools import ToolRegistry
+from insightagent.tools import ToolRegistry, default_tools
+
+
+class ExternalTool:
+    name = "external_tool"
+    description = "External test tool"
+    input_schema = {"type": "object", "properties": {}}
+
+    def run(self, arguments: dict) -> str:
+        return "external ok"
 
 
 class ExtendedToolTests(unittest.TestCase):
@@ -26,6 +35,24 @@ class ExtendedToolTests(unittest.TestCase):
         self.assertIn("get_function_signature", names)
         self.assertIn("find_dependencies", names)
         self.assertIn("get_code_metrics", names)
+
+    def test_registry_accepts_external_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = ToolContext(workspace=Path(directory))
+            registry = ToolRegistry(tools=default_tools(context) + [ExternalTool()], context=context)
+
+            names = {schema["name"] for schema in registry.schemas()}
+            result = registry.run("external_tool", {})
+
+        self.assertIn("external_tool", names)
+        self.assertEqual(result, "external ok")
+
+    def test_registry_rejects_duplicate_tool_names(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = ToolContext(workspace=Path(directory))
+
+            with self.assertRaises(ValueError):
+                ToolRegistry(tools=[ExternalTool(), ExternalTool()], context=context)
 
     def test_glob_search_returns_matching_workspace_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -23,7 +23,11 @@ class ToolRegistry:
     def __init__(self, tools: list[Tool] | None = None, context: ToolContext | None = None) -> None:
         self.context = context or ToolContext(workspace=Path.cwd())
         resolved_tools = default_tools(self.context) if tools is None else tools
-        self._tools = {tool.name: tool for tool in resolved_tools}
+        self._tools: dict[str, Tool] = {}
+        for tool in resolved_tools:
+            if tool.name in self._tools:
+                raise ValueError(f"duplicate tool name: {tool.name}")
+            self._tools[tool.name] = tool
 
     def schemas(self) -> list[dict[str, Any]]:
         return [
