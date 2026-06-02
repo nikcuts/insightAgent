@@ -287,7 +287,7 @@ python3 -m unittest discover -s tests -v
 期望结果：
 
 ```text
-Ran 75+ tests
+Ran 69 tests
 OK
 ```
 
