@@ -1,45 +1,44 @@
 # InsightAgent V5.0
 
-InsightAgent V5.0 turns the earlier prototype into a small but complete coding-agent runtime.
+InsightAgent V5.0 将前几个版本的原型推进为一个小而完整的 coding-agent runtime。
 
-Earlier checkpoints are preserved for comparison:
+前序版本保留用于对比：
 
-- `/home/dinghanchen/stuckin/insightagent`: V1.0 baseline loop
-- `/home/dinghanchen/stuckin/insightagent_v2`: memory injection, truncation, micro-compaction
-- `/home/dinghanchen/stuckin/insightagent_v3`: ToolContext, workspace safety, permissions, `edit_file`
-- `/home/dinghanchen/stuckin/insightagent_v4`: `grep_search`, self-healing repair prompt
-- `/home/dinghanchen/stuckin/insightagent_v5`: runtime system
+- `/home/dinghanchen/stuckin/insightagent`：V1.0 基础循环
+- `/home/dinghanchen/stuckin/insightagent_v2`：memory 注入、截断、微型压缩
+- `/home/dinghanchen/stuckin/insightagent_v3`：ToolContext、workspace 安全边界、权限、`edit_file`
+- `/home/dinghanchen/stuckin/insightagent_v4`：`grep_search`、self-healing repair prompt
+- `/home/dinghanchen/stuckin/insightagent_v5`：runtime 系统
 
-V5.0 is inspired by the runtime structure in `/home/dinghanchen/stuckin/claw-code-parity`, especially its config loader, session persistence, compaction, usage tracking, CLI commands, and parity-harness mindset.
+V5.0 参考了 `/home/dinghanchen/stuckin/claw-code-parity` 的 runtime 结构，尤其是配置加载、session 持久化、上下文压缩、用量统计、CLI 命令和 parity-harness 思路。
 
-## What V5 Adds
+## V5 新增能力
 
-V5.0 keeps all V4 behavior and adds:
+V5.0 保留 V4 的全部行为，并新增：
 
-- runtime config loading and precedence
-- session creation, persistence, resume, listing, and transcript export
-- usage estimation per model call
+- runtime 配置加载和优先级合并
+- session 创建、持久化、恢复、列表查询和 transcript 导出
+- 每次模型调用的用量估算
 - slash command dispatcher
-- interactive CLI with `/status`, `/cost`, `/memory`, `/compact`, `/clear`, `/permissions`, `/export`
-- `run_task` integration with sessions and config
-- task lifecycle state machine: `plan -> implement -> verify -> repair -> summarize`
-- structured tool package with Python code-analysis tools: `parse_ast`, `get_function_signature`,
-  `find_dependencies`, and `get_code_metrics`
+- 交互式 CLI，支持 `/status`、`/cost`、`/memory`、`/compact`、`/clear`、`/permissions`、`/export`
+- 带 session 和 config 集成的 `run_task`
+- 任务生命周期状态机：`plan -> implement -> verify -> repair -> summarize`
+- 结构化工具 package，以及 Python 代码分析工具：`parse_ast`、`get_function_signature`、`find_dependencies`、`get_code_metrics`
 
-This is the first version that behaves like a stateful runtime rather than a one-off demo script.
+这是第一个真正像“有状态 runtime”的版本，不再只是一次性 demo script。
 
-## Architecture
+## 架构
 
 ```text
-config.py          # user/project/local config merge
-session.py         # JSON session store and Markdown transcript export
-task_state.py      # plan/implement/verify/repair/summarize lifecycle
-usage.py           # token/cost-ish usage estimation
+config.py          # 用户/项目/local/CLI 配置合并
+session.py         # JSON session 存储和 Markdown transcript 导出
+task_state.py      # plan/implement/verify/repair/summarize 生命周期
+usage.py           # token/cost-ish 用量估算
 slash_commands.py  # slash command dispatcher
-agent.py           # agent loop with usage + session sync
-run_task.py        # non-interactive task runner
-cli.py             # interactive REPL
-tools/             # execution, file, search, state, and code-analysis tools
+agent.py           # 带 usage 和 session sync 的 agent loop
+run_task.py        # 非交互式任务 runner
+cli.py             # 交互式 REPL
+tools/             # execution、file、search、state、code-analysis 工具
   base.py
   execution_tools.py
   file_tools.py
@@ -49,32 +48,32 @@ tools/             # execution, file, search, state, and code-analysis tools
   registry.py
 ```
 
-The V5 flow:
+V5 流程：
 
 ```text
-load config
--> create/resume session
--> load project memory
--> assemble system prompt
--> run model/tool loop
--> inject phase guidance and track task lifecycle
--> record usage per model call
--> persist messages and metadata
--> allow slash-command inspection/export/compact
+加载配置
+-> 创建或恢复 session
+-> 加载项目 memory
+-> 组装 system prompt
+-> 运行模型/工具循环
+-> 注入阶段指导并跟踪任务生命周期
+-> 记录每次模型调用的用量
+-> 持久化 messages 和 metadata
+-> 支持 slash command 检查、导出和压缩
 ```
 
-## Configuration
+## 配置
 
-Config precedence:
+配置优先级：
 
 ```text
 ~/.insightagent/config.json
 <workspace>/.insightagent/config.json
 <workspace>/.insightagent/local.json
-CLI arguments
+CLI 参数
 ```
 
-Example project config:
+项目配置示例：
 
 ```json
 {
@@ -101,11 +100,11 @@ Example project config:
 }
 ```
 
-Local config is intended for machine-specific overrides and should not contain shared secrets.
+local 配置用于机器本地覆盖，不应包含需要共享的密钥。
 
-## Environment
+## 环境变量
 
-SiliconFlow:
+SiliconFlow：
 
 ```bash
 export SILICONFLOW_API_KEY="..."
@@ -113,7 +112,7 @@ export SILICONFLOW_BASE_URL="https://api.siliconflow.cn/v1"
 export SILICONFLOW_MODEL="Qwen/Qwen2.5-72B-Instruct"
 ```
 
-OpenAI-compatible:
+OpenAI-compatible：
 
 ```bash
 export OPENAI_API_KEY="..."
@@ -121,16 +120,16 @@ export OPENAI_BASE_URL="https://api.openai.com/v1"
 export OPENAI_MODEL="gpt-4o-mini"
 ```
 
-Anthropic:
+Anthropic：
 
 ```bash
 export ANTHROPIC_API_KEY="..."
 export ANTHROPIC_MODEL="claude-sonnet-4-20250514"
 ```
 
-Do not hard-code API keys in source files, config committed to Git, README examples, or shared logs.
+不要把 API key 写死在源码、提交到 Git 的配置、README 示例或共享日志里。
 
-## Non-Interactive Usage
+## 非交互式使用
 
 ```bash
 cd /home/dinghanchen/stuckin/insightagent_v5
@@ -145,7 +144,7 @@ python3 -m insightagent.run_task \
   --task "请创建一个 Python 纸牌游戏 card_war.py。先给 plan，写文件，运行 python3 -m py_compile card_war.py 和 python3 card_war.py。如果出现错误，请自动修复并重新验证。最后总结。"
 ```
 
-The trace starts with a session block:
+trace 开头会包含 session 信息：
 
 ```text
 --- SESSION ---
@@ -154,13 +153,13 @@ dir=<workspace>/.insightagent/sessions
 config_files=...
 ```
 
-List sessions:
+列出 sessions：
 
 ```bash
 python3 -m insightagent.run_task --workspace demo_v5 --list-sessions
 ```
 
-Resume a session:
+恢复 session：
 
 ```bash
 python3 -m insightagent.run_task \
@@ -169,7 +168,7 @@ python3 -m insightagent.run_task \
   --task "继续上一个任务，检查当前文件并总结状态。"
 ```
 
-## Interactive CLI
+## 交互式 CLI
 
 ```bash
 python3 -m insightagent.cli \
@@ -178,7 +177,7 @@ python3 -m insightagent.cli \
   --workspace demo_v5
 ```
 
-Slash commands:
+Slash commands：
 
 ```text
 /help
@@ -191,93 +190,93 @@ Slash commands:
 /export transcript.md
 ```
 
-## Session Storage
+## Session 存储
 
-Sessions are saved as JSON:
+Session 以 JSON 保存：
 
 ```text
 <workspace>/.insightagent/sessions/<session_id>.json
 ```
 
-Each session records:
+每个 session 记录：
 
 - session id
-- created/updated timestamps
+- created/updated 时间戳
 - metadata
 - messages
 - assistant tool calls
 - tool results
-- usage estimates
+- 用量估算
 
-Markdown transcript export is supported through:
+支持通过命令行导出 Markdown transcript：
 
 ```bash
 --export-transcript path/to/transcript.md
 ```
 
-or interactively:
+也支持交互式导出：
 
 ```text
 /export transcript.md
 ```
 
-## Runtime Limitations
+## 当前限制
 
-V5.0 is much less toy-like than V1-V4, but it is still not a full Claude Code replacement:
+V5.0 已经明显不像 V1-V4 那样偏 demo，但还不是完整 Claude Code 替代品：
 
-- token usage is estimated from characters, not provider tokenizer data
-- session storage is JSON file based, not concurrent or database backed
-- `/compact` uses deterministic structural summary, not LLM-generated summary
-- slash command support is useful but not a full terminal UI
-- hook system is not implemented yet
-- mock parity harness is not implemented yet
-- LSP diagnostics are best-effort local syntax checks rather than a persistent language-server session
-- MCP, plugins, and sub-agent orchestration are still future work
+- token 用量是按字符估算，不是 provider tokenizer 的精确结果
+- session 存储基于 JSON 文件，不支持并发或数据库级管理
+- `/compact` 使用 deterministic structural summary，不是 LLM-generated summary
+- slash command 有用，但还不是完整 terminal UI
+- hook system 尚未实现
+- mock parity harness 尚未实现
+- LSP diagnostics 只是本地语法检查的 best-effort 版本，不是持久 language-server session
+- MCP、plugins 和 sub-agent orchestration 仍是后续工作
 
-## Tests
+## 测试
 
 ```bash
 python3 -m py_compile $(find insightagent tests -name '*.py' -print)
 python3 -m unittest discover -s tests -v
 ```
 
-Expected result:
+期望结果：
 
 ```text
 Ran 42 tests
 OK
 ```
 
-Test coverage includes:
+测试覆盖：
 
 - agent loop
-- task lifecycle state transitions
+- 任务生命周期状态转移
 - self-healing repair prompt
-- config merge precedence
-- project memory injection
-- tool output truncation and compaction
-- provider message conversion
-- session save/load/export
-- slash command behavior
+- config merge 优先级
+- 项目 memory 注入
+- tool output 截断和压缩
+- provider message 转换
+- session 保存、加载和导出
+- slash command 行为
 - workspace permission checks
 - `edit_file`
 - `grep_search`
 - `glob_search`
-- `git_status` and `git_diff`
+- `git_status` 和 `git_diff`
 - `todo_write`
 - best-effort `lsp_diagnostics`
-- Python code-analysis tools: `parse_ast`, `get_function_signature`, `find_dependencies`, `get_code_metrics`
-- usage estimation
+- Python 代码分析工具：`parse_ast`、`get_function_signature`、`find_dependencies`、`get_code_metrics`
+- 用量估算
 
-## Next Work
+## 下一步工作
 
-The next major system step should be **V6.0: Hooks + Audit + Parity Harness**:
+下一阶段建议推进 **V6.0: Hooks + Audit + Parity Harness**：
 
 - `pre_tool_use`
 - `post_tool_use`
 - `post_tool_failure`
 - structured audit log
 - deterministic fake-model scenario runner
-- parity scenarios for write allowed/denied, grep, repair, compaction, and resume
+- 覆盖 write allowed/denied、grep、repair、compaction、resume 的 parity scenarios
 
-That would bring InsightAgent closer to the engineering shape of `claw-code-parity`.
+这会让 InsightAgent 更接近 `claw-code-parity` 的工程形态。

@@ -1,73 +1,73 @@
 # 工具结构与代码分析能力实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **给 agentic workers：** 必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 按任务逐步实现本计划。步骤使用 checkbox（`- [ ]`）语法追踪。
 
-**Goal:** 将 InsightAgent V5.0 的工具层拆成清晰 package，并新增 Python 代码分析工具。
+**目标：** 将 InsightAgent V5.0 的工具层拆成清晰 package，并新增 Python 代码分析工具。
 
-**Architecture:** 保持 `insightagent.tools` 公开导入路径兼容，把原 `tools.py` 的实现迁移到 `insightagent/tools/` package。新增代码分析工具复用 `ToolContext` 的 workspace 边界，作为默认 registry 的 additive tools 暴露给 agent loop。
+**架构：** 保持 `insightagent.tools` 公开导入路径兼容，把原 `tools.py` 的实现迁移到 `insightagent/tools/` package。新增代码分析工具复用 `ToolContext` 的 workspace 边界，作为默认 registry 的 additive tools 暴露给 agent loop。
 
-**Tech Stack:** Python 3.10+ standard library, `unittest`, `ast`, existing `ToolContext`, existing `Message`/`ToolRegistry` contracts.
+**技术栈：** Python 3.10+ 标准库、`unittest`、`ast`、现有 `ToolContext`、现有 `Message`/`ToolRegistry` 契约。
 
 ---
 
 ## 文件结构
 
-- Create: `insightagent/tools/__init__.py`，导出公开工具 API。
-- Create: `insightagent/tools/base.py`，放置 `Tool` protocol 与共享读取 helper。
-- Create: `insightagent/tools/execution_tools.py`，放置 `ExecuteCommandTool`。
-- Create: `insightagent/tools/file_tools.py`，放置 `ReadFileTool`、`WriteFileTool`、`EditFileTool`。
-- Create: `insightagent/tools/search_tools.py`，放置 `GrepSearchTool`、`GlobSearchTool`。
-- Create: `insightagent/tools/code_analysis_tools.py`，放置 `ParseAstTool`、`GetFunctionSignatureTool`、`FindDependenciesTool`、`GetCodeMetricsTool`。
-- Create: `insightagent/tools/registry.py`，放置 `ToolRegistry` 和默认工具注册。
-- Delete: `insightagent/tools.py`，因为 Python 不能同时稳定保留同名 module 和 package；改成 package 后 `from insightagent.tools import ToolRegistry` 继续可用。
-- Modify: `README.md`，更新架构与工具说明。
-- Create: `tests/test_code_analysis_tools.py`，覆盖新增代码分析工具。
-- Modify: `tests/test_extended_tools.py`，确认默认 registry 包含新增工具，同时已有工具名不变。
+- 新建：`insightagent/tools/__init__.py`，导出公开工具 API。
+- 新建：`insightagent/tools/base.py`，放置 `Tool` protocol 与共享读取 helper。
+- 新建：`insightagent/tools/execution_tools.py`，放置 `ExecuteCommandTool`。
+- 新建：`insightagent/tools/file_tools.py`，放置 `ReadFileTool`、`WriteFileTool`、`EditFileTool`。
+- 新建：`insightagent/tools/search_tools.py`，放置 `GrepSearchTool`、`GlobSearchTool`。
+- 新建：`insightagent/tools/code_analysis_tools.py`，放置 `ParseAstTool`、`GetFunctionSignatureTool`、`FindDependenciesTool`、`GetCodeMetricsTool`。
+- 新建：`insightagent/tools/registry.py`，放置 `ToolRegistry` 和默认工具注册。
+- 删除：`insightagent/tools.py`，因为 Python 不能同时稳定保留同名 module 和 package；改成 package 后 `from insightagent.tools import ToolRegistry` 继续可用。
+- 修改：`README.md`，更新架构与工具说明。
+- 新建：`tests/test_code_analysis_tools.py`，覆盖新增代码分析工具。
+- 修改：`tests/test_extended_tools.py`，确认默认 registry 包含新增工具，同时已有工具名不变。
 
-## Task 1: 基线验证
+## Task 1：基线验证
 
-**Files:** 无代码改动。
+**文件：** 无代码改动。
 
-- [ ] **Step 1: 运行现有 py_compile**
+- [ ] **Step 1：运行现有 py_compile**
 
-Run:
+运行：
 
 ```bash
 python3 -m py_compile insightagent/*.py tests/*.py
 ```
 
-Expected: exit 0。
+期望：exit 0。
 
-- [ ] **Step 2: 运行现有测试**
+- [ ] **Step 2：运行现有测试**
 
-Run:
+运行：
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-Expected: 现有测试全部通过。
+期望：现有测试全部通过。
 
-## Task 2: 写代码分析工具失败测试
+## Task 2：写代码分析工具失败测试
 
-**Files:**
-- Create: `tests/test_code_analysis_tools.py`
-- Modify: `tests/test_extended_tools.py`
+**文件：**
+- 新建：`tests/test_code_analysis_tools.py`
+- 修改：`tests/test_extended_tools.py`
 
-- [ ] **Step 1: 新增失败测试文件**
+- [ ] **Step 1：新增失败测试文件**
 
-Create `tests/test_code_analysis_tools.py` with tests that import the future tools through `ToolRegistry.default(context)`, create sample Python files under a temp workspace, and assert JSON output for:
+创建 `tests/test_code_analysis_tools.py`。测试通过未来的 `ToolRegistry(context=...)` 调用新增工具，在临时 workspace 中创建样例 Python 文件，并断言以下工具的 JSON 输出：
 
 - `parse_ast`
 - `get_function_signature`
 - `find_dependencies`
 - `get_code_metrics`
-- syntax error handling
-- non-Python file handling
+- 语法错误处理
+- 非 Python 文件处理
 
-- [ ] **Step 2: 扩展 registry schema 测试**
+- [ ] **Step 2：扩展 registry schema 测试**
 
-Modify `tests/test_extended_tools.py` so the default registry expected names include:
+修改 `tests/test_extended_tools.py`，让默认 registry 期望工具名包含：
 
 ```python
 "parse_ast",
@@ -76,35 +76,35 @@ Modify `tests/test_extended_tools.py` so the default registry expected names inc
 "get_code_metrics",
 ```
 
-- [ ] **Step 3: 运行失败测试**
+- [ ] **Step 3：运行失败测试**
 
-Run:
+运行：
 
 ```bash
 python3 -m unittest tests.test_code_analysis_tools -v
 python3 -m unittest tests.test_extended_tools -v
 ```
 
-Expected: FAIL because the new tool names/classes are not implemented yet.
+期望：失败，原因是新工具名或类尚未实现。
 
-## Task 3: 拆分工具 package 并保持兼容
+## Task 3：拆分工具 package 并保持兼容
 
-**Files:**
-- Create: `insightagent/tools/__init__.py`
-- Create: `insightagent/tools/base.py`
-- Create: `insightagent/tools/execution_tools.py`
-- Create: `insightagent/tools/file_tools.py`
-- Create: `insightagent/tools/search_tools.py`
-- Create: `insightagent/tools/registry.py`
-- Delete: `insightagent/tools.py`
+**文件：**
+- 新建：`insightagent/tools/__init__.py`
+- 新建：`insightagent/tools/base.py`
+- 新建：`insightagent/tools/execution_tools.py`
+- 新建：`insightagent/tools/file_tools.py`
+- 新建：`insightagent/tools/search_tools.py`
+- 新建：`insightagent/tools/registry.py`
+- 删除：`insightagent/tools.py`
 
-- [ ] **Step 1: 迁移现有工具代码**
+- [ ] **Step 1：迁移现有工具代码**
 
-Move existing tool classes into focused modules without changing tool names, schemas, or run behavior.
+将现有工具类迁移到聚焦模块中，不改变工具名称、schema 或 `run` 行为。
 
-- [ ] **Step 2: 导出兼容 API**
+- [ ] **Step 2：导出兼容 API**
 
-`insightagent/tools/__init__.py` must export:
+`insightagent/tools/__init__.py` 必须导出：
 
 ```python
 Tool
@@ -117,30 +117,30 @@ GlobSearchTool
 ToolRegistry
 ```
 
-- [ ] **Step 3: 运行兼容测试**
+- [ ] **Step 3：运行兼容测试**
 
-Run:
+运行：
 
 ```bash
 python3 -m unittest tests.test_agent_loop tests.test_extended_tools tests.test_tool_context -v
 ```
 
-Expected: tests that rely on existing tool behavior pass except failures specifically caused by missing code-analysis tools.
+期望：依赖现有工具行为的测试继续通过；如果有失败，只能来自尚未实现的代码分析工具。
 
-## Task 4: 实现代码分析工具
+## Task 4：实现代码分析工具
 
-**Files:**
-- Create: `insightagent/tools/code_analysis_tools.py`
-- Modify: `insightagent/tools/__init__.py`
-- Modify: `insightagent/tools/registry.py`
+**文件：**
+- 新建：`insightagent/tools/code_analysis_tools.py`
+- 修改：`insightagent/tools/__init__.py`
+- 修改：`insightagent/tools/registry.py`
 
-- [ ] **Step 1: 实现只读 Python 文件解析 helper**
+- [ ] **Step 1：实现只读 Python 文件解析 helper**
 
-Add helper logic that resolves workspace paths through `ToolContext`, verifies the file exists, is a file, has `.py` suffix, is not binary-looking, and respects `context.max_read_chars`.
+新增 helper：通过 `ToolContext` 解析 workspace 路径，验证文件存在、是普通文件、后缀为 `.py`、不是二进制样式文件，并遵守 `context.max_read_chars`。
 
-- [ ] **Step 2: 实现 `parse_ast`**
+- [ ] **Step 2：实现 `parse_ast`**
 
-Return deterministic JSON containing:
+返回 deterministic JSON，结构为：
 
 ```json
 {
@@ -152,93 +152,93 @@ Return deterministic JSON containing:
 }
 ```
 
-- [ ] **Step 3: 实现 `get_function_signature`**
+- [ ] **Step 3：实现 `get_function_signature`**
 
-Return deterministic JSON with `name`, `signature`, `line`, `docstring`, `is_async`, and `kind` for top-level functions and class methods.
+返回 deterministic JSON，包含顶层函数和类方法的 `name`、`signature`、`line`、`docstring`、`is_async`、`kind`。
 
-- [ ] **Step 4: 实现 `find_dependencies`**
+- [ ] **Step 4：实现 `find_dependencies`**
 
-Return deterministic JSON with `stdlib`, `third_party`, `local`, and `relative` import lists.
+返回 deterministic JSON，包含 `stdlib`、`third_party`、`local`、`relative` import 列表。
 
-- [ ] **Step 5: 实现 `get_code_metrics`**
+- [ ] **Step 5：实现 `get_code_metrics`**
 
-Return deterministic JSON with line counts and AST counts.
+返回 deterministic JSON，包含行数和 AST 计数。
 
-- [ ] **Step 6: 注册并导出新工具**
+- [ ] **Step 6：注册并导出新工具**
 
-Default registry must include the four new tools, and `__init__.py` must export their classes.
+默认 registry 必须包含四个新工具，`__init__.py` 必须导出它们的类。
 
-- [ ] **Step 7: 运行新增测试**
+- [ ] **Step 7：运行新增测试**
 
-Run:
+运行：
 
 ```bash
 python3 -m unittest tests.test_code_analysis_tools tests.test_extended_tools -v
 ```
 
-Expected: pass。
+期望：通过。
 
-## Task 5: 更新 README
+## Task 5：更新 README
 
-**Files:**
-- Modify: `README.md`
+**文件：**
+- 修改：`README.md`
 
-- [ ] **Step 1: 更新 Architecture 小节**
+- [ ] **Step 1：更新架构小节**
 
-Document the new `insightagent/tools/` package and responsibilities.
+记录新的 `insightagent/tools/` package 和各模块职责。
 
-- [ ] **Step 2: 更新 What V5 Adds 或工具说明**
+- [ ] **Step 2：更新 V5 新增能力或工具说明**
 
-Add the four code-analysis tools and state that MCP remains future work.
+加入四个代码分析工具，并说明 MCP 仍是后续工作。
 
-- [ ] **Step 3: 运行文档无须构建检查**
+- [ ] **Step 3：运行文档检查**
 
-Run:
+运行：
 
 ```bash
 rg -n "code analysis|代码分析|insightagent/tools" README.md
 ```
 
-Expected: output includes the new documentation lines.
+期望：输出包含新的文档行。
 
-## Task 6: 完整验证与提交
+## Task 6：完整验证与提交
 
-**Files:** all changed files.
+**文件：** 所有变更文件。
 
-- [ ] **Step 1: 运行 py_compile**
+- [ ] **Step 1：运行 py_compile**
 
-Run:
+运行：
 
 ```bash
 python3 -m py_compile $(find insightagent tests -name '*.py' -print)
 ```
 
-Expected: exit 0。
+期望：exit 0。
 
-- [ ] **Step 2: 运行完整测试**
+- [ ] **Step 2：运行完整测试**
 
-Run:
+运行：
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-Expected: all tests pass。
+期望：全部测试通过。
 
-- [ ] **Step 3: 查看 git diff**
+- [ ] **Step 3：查看 git diff**
 
-Run:
+运行：
 
 ```bash
 git status --short
 git diff --stat
 ```
 
-Expected: only planned files changed.
+期望：只有计划内文件发生变化。
 
-- [ ] **Step 4: 提交**
+- [ ] **Step 4：提交**
 
-Run:
+运行：
 
 ```bash
 git add README.md insightagent tests docs/superpowers/plans/2026-06-02-tool-structure-code-analysis.md
