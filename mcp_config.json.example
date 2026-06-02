@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"],
+      "enabled": true,
+      "startup_timeout": 20,
+      "request_timeout": 60,
+      "tool_prefix": "mcp_playwright"
+    },
+    "remote-docs": {
+      "transport": "streamable_http",
+      "url": "https://example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${REMOTE_MCP_TOKEN}"
+      },
+      "enabled": false,
+      "request_timeout": 60,
+      "tool_prefix": "mcp_docs"
+    }
+  }
+}

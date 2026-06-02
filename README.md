@@ -24,6 +24,7 @@ V5.0 保留 V4 的全部行为，并新增：
 - 带 session 和 config 集成的 `run_task`
 - 任务生命周期状态机：`plan -> implement -> verify -> repair -> summarize`
 - 结构化工具 package，以及 Python 代码分析工具：`parse_ast`、`get_function_signature`、`find_dependencies`、`get_code_metrics`
+- MCP Runtime Layer：支持 `stdio`、`streamable_http`、MCP tools/resources/prompts 和 `/mcp` CLI 状态命令
 
 这是第一个真正像“有状态 runtime”的版本，不再只是一次性 demo script。
 
@@ -38,6 +39,13 @@ slash_commands.py  # slash command dispatcher
 agent.py           # 带 usage 和 session sync 的 agent loop
 run_task.py        # 非交互式任务 runner
 cli.py             # 交互式 REPL
+mcp/               # MCP config、protocol、transport、client、manager、adapter
+  config.py
+  protocol.py
+  transports.py
+  client.py
+  manager.py
+  adapters.py
 tools/             # execution、file、search、state、code-analysis 工具
   base.py
   execution_tools.py
@@ -54,6 +62,7 @@ V5 流程：
 加载配置
 -> 创建或恢复 session
 -> 加载项目 memory
+-> 启动 enabled MCP servers 并加载 MCP tools/resources/prompts
 -> 组装 system prompt
 -> 运行模型/工具循环
 -> 注入阶段指导并跟踪任务生命周期
@@ -101,6 +110,36 @@ CLI 参数
 ```
 
 local 配置用于机器本地覆盖，不应包含需要共享的密钥。
+
+## MCP 配置
+
+MCP 配置单独存放，加载顺序：
+
+```text
+~/.insightagent/mcp_config.json
+<workspace>/.insightagent/mcp_config.json
+<workspace>/mcp_config.json
+```
+
+示例见 [mcp_config.json.example](mcp_config.json.example)。
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"],
+      "enabled": true,
+      "tool_prefix": "mcp_playwright"
+    }
+  }
+}
+```
+
+MCP tool 会按 `<prefix>_<tool>` 暴露给模型，例如 `mcp_playwright_navigate`。MCP resources 和 prompts 会通过 `<prefix>_list_resources`、`<prefix>_read_resource`、`<prefix>_list_prompts`、`<prefix>_get_prompt` 暴露。
+
+详细说明见 [MCP_GUIDE.md](MCP_GUIDE.md)。
 
 ## 环境变量
 
@@ -188,6 +227,10 @@ Slash commands：
 /clear
 /permissions
 /export transcript.md
+/mcp status
+/mcp tools
+/mcp restart <server>
+/mcp refresh <server>
 ```
 
 ## Session 存储
@@ -231,7 +274,8 @@ V5.0 已经明显不像 V1-V4 那样偏 demo，但还不是完整 Claude Code �
 - hook system 尚未实现
 - mock parity harness 尚未实现
 - LSP diagnostics 只是本地语法检查的 best-effort 版本，不是持久 language-server session
-- MCP、plugins 和 sub-agent orchestration 仍是后续工作
+- MCP 已支持基础 runtime layer，但真实第三方 server 的可用性仍取决于本机 Node/npm、网络、远程服务和 server 自身行为
+- plugins 和 sub-agent orchestration 仍是后续工作
 
 ## 测试
 
@@ -243,7 +287,7 @@ python3 -m unittest discover -s tests -v
 期望结果：
 
 ```text
-Ran 42 tests
+Ran 75+ tests
 OK
 ```
 
@@ -258,6 +302,7 @@ OK
 - provider message 转换
 - session 保存、加载和导出
 - slash command 行为
+- MCP config、protocol、stdio/http transport、client、manager、adapter 和 `/mcp` 命令
 - workspace permission checks
 - `edit_file`
 - `grep_search`
