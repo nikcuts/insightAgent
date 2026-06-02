@@ -6,6 +6,8 @@ import json
 import os
 import subprocess
 import threading
+import urllib.error
+import urllib.request
 from collections import deque
 from queue import Empty, Queue
 from typing import Any
@@ -150,5 +152,96 @@ class StdioTransport:
 
 
 class StreamableHttpTransport:
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        raise MCPTransportError("StreamableHttpTransport is not implemented yet")
+    def __init__(
+        self,
+        name: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        request_timeout: float = 60,
+    ) -> None:
+        self.name = name
+        self.url = url
+        self.headers = headers or {}
+        self.request_timeout = request_timeout
+        self.session_id: str | None = None
+        self.protocol_version: str | None = None
+        self._ids = JsonRpcIdGenerator()
+
+    def start(self) -> None:
+        return
+
+    def stop(self) -> None:
+        return
+
+    def set_protocol_version(self, protocol_version: str) -> None:
+        self.protocol_version = protocol_version
+
+    def send_request(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> Any:
+        message_id = self._ids.next()
+        response = self._post(build_request(message_id, method, params), timeout or self.request_timeout)
+        return parse_response(response, expected_id=message_id)
+
+    def send_notification(self, method: str, params: dict[str, Any] | None = None) -> None:
+        self._post(build_notification(method, params), self.request_timeout, expect_response=False)
+
+    def stderr_summary(self) -> str:
+        return ""
+
+    def _post(self, message: dict[str, Any], timeout: float, expect_response: bool = True) -> dict[str, Any]:
+        body = json.dumps(message, ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            **self.headers,
+        }
+        if self.protocol_version:
+            headers["MCP-Protocol-Version"] = self.protocol_version
+        if self.session_id:
+            headers["Mcp-Session-Id"] = self.session_id
+        request = urllib.request.Request(self.url, data=body, headers=headers, method="POST")
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(request, timeout=timeout) as response:
+                session_id = response.headers.get("Mcp-Session-Id")
+                if session_id:
+                    self.session_id = session_id
+                if not expect_response:
+                    return {}
+                raw = response.read()
+                content_type = response.headers.get("Content-Type", "")
+        except urllib.error.HTTPError as error:
+            if error.code == 404 and self.session_id:
+                self.session_id = None
+            raise MCPTransportError(f"MCP HTTP error for {self.name}: {error.code}") from error
+        except OSError as error:
+            raise MCPTransportError(f"MCP HTTP request failed for {self.name}: {error}") from error
+
+        if "text/event-stream" in content_type:
+            return self._parse_sse(raw)
+        try:
+            decoded = json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError as error:
+            raise MCPTransportError(f"invalid MCP HTTP JSON response for {self.name}: {error}") from error
+        if not isinstance(decoded, dict):
+            raise MCPTransportError(f"MCP HTTP response must be an object for {self.name}")
+        return decoded
+
+    def _parse_sse(self, raw: bytes) -> dict[str, Any]:
+        for line in raw.decode("utf-8").splitlines():
+            if not line.startswith("data:"):
+                continue
+            payload = line.removeprefix("data:").strip()
+            if not payload:
+                continue
+            try:
+                decoded = json.loads(payload)
+            except json.JSONDecodeError as error:
+                raise MCPTransportError(f"invalid MCP SSE JSON response for {self.name}: {error}") from error
+            if isinstance(decoded, dict):
+                return decoded
+        raise MCPTransportError(f"MCP SSE response did not contain JSON data for {self.name}")
