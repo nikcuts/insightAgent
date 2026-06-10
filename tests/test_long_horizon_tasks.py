@@ -66,10 +66,12 @@ class LongHorizonLifecycleTests(unittest.TestCase):
                 "execute_command",
                 {"command": "python3 test_calc.py", "cwd": directory},
             ),
+            # The replacement changes the file size so CPython invalidates the cached
+            # bytecode for calc.py (same-size same-second edits can reuse a stale .pyc).
             tool_response(
                 "call_fix",
                 "edit_file",
-                {"path": "calc.py", "old": "def add(a, b):\n    return a - b", "new": "def add(a, b):\n    return a + b"},
+                {"path": "calc.py", "old": "def add(a, b):\n    return a - b", "new": "def add(a, b):\n    return a + b  # repaired"},
             ),
             tool_response(
                 "call_run_pass",
@@ -106,7 +108,8 @@ class LongHorizonLifecycleTests(unittest.TestCase):
             self.assertEqual(phase_sequence(events), ["implement", "repair", "verify", "summarize", "done"])
             self.assertEqual(agent.task_state.phase, TaskPhase.DONE)
             self.assertEqual(agent.task_state.repair_attempts, 1)
-            self.assertEqual(agent.task_state.verification_attempts, 2)
+            # Failed runs count as repairs, not verifications; only the passing rerun counts.
+            self.assertEqual(agent.task_state.verification_attempts, 1)
 
             # The failing test run triggered self-healing before the fix.
             self.assertTrue(any(event["type"] == "self_healing_repair" for event in events))
