@@ -88,17 +88,34 @@ class MCPConfig:
 def load_mcp_config(
     workspace: str | Path,
     user_config_home: str | Path | None = None,
+    start_dir: str | Path | None = None,
 ) -> MCPConfig:
     workspace_path = Path(workspace).expanduser().resolve()
     home = Path(user_config_home).expanduser() if user_config_home else Path.home() / ".insightagent"
     candidate_paths = [
         home / "mcp_config.json",
-        workspace_path / ".insightagent" / "mcp_config.json",
-        workspace_path / "mcp_config.json",
     ]
+    if start_dir is not None:
+        start_path = Path(start_dir).expanduser().resolve()
+        candidate_paths.extend(
+            [
+                start_path / ".insightagent" / "mcp_config.json",
+                start_path / "mcp_config.json",
+            ]
+        )
+    candidate_paths.extend(
+        [
+            workspace_path / ".insightagent" / "mcp_config.json",
+            workspace_path / "mcp_config.json",
+        ]
+    )
     merged: dict[str, Any] = {}
     loaded: list[str] = []
+    seen: set[Path] = set()
     for path in candidate_paths:
+        if path in seen:
+            continue
+        seen.add(path)
         if not path.is_file():
             continue
         try:

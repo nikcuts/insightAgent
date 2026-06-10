@@ -6,7 +6,7 @@ import argparse
 import os
 from pathlib import Path
 
-from .config import load_runtime_config
+from .config import load_dotenv_files, load_runtime_config
 from .context import ContextManager, build_system_prompt, load_project_memory
 from .agent import CodeAgent
 from .mcp.config import load_mcp_config
@@ -34,6 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     workspace = Path(args.workspace).expanduser().resolve()
+    start_dir = Path.cwd().resolve()
+    load_dotenv_files(workspace, start_dir=start_dir)
     workspace.mkdir(parents=True, exist_ok=True)
     config = load_runtime_config(
         workspace,
@@ -72,7 +74,7 @@ Use workspace-safe tools. Use slash commands only when the user types them direc
 
     tool_context = ToolContext(workspace=workspace, permission_mode=config.permission_mode)
     mcp_config_home = Path(args.config_home).expanduser() if args.config_home else None
-    mcp_manager = MCPManager(load_mcp_config(workspace, user_config_home=mcp_config_home))
+    mcp_manager = MCPManager(load_mcp_config(workspace, user_config_home=mcp_config_home, start_dir=start_dir))
     mcp_manager.start_enabled()
     agent = CodeAgent(
         client,

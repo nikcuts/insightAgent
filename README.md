@@ -113,13 +113,17 @@ local 配置用于机器本地覆盖，不应包含需要共享的密钥。
 
 ## MCP 配置
 
-MCP 配置单独存放，加载顺序：
+MCP 配置单独存放。非交互式 `run_task` 和交互式 `cli` 都会记录启动命令时所在目录，并按下面顺序读取 MCP 配置。后读取的同名 server 会覆盖先读取的字段：
 
 ```text
 ~/.insightagent/mcp_config.json
+<start_dir>/.insightagent/mcp_config.json
+<start_dir>/mcp_config.json
 <workspace>/.insightagent/mcp_config.json
 <workspace>/mcp_config.json
 ```
+
+这样从项目根目录启动、但把 `--workspace` 指到 `demo_mcp` 这类演示目录时，也能自动加载项目根目录的 `mcp_config.json`，不需要再把配置复制到 workspace 里。
 
 示例见 [mcp_config.json.example](mcp_config.json.example)。
 
@@ -142,6 +146,12 @@ MCP tool 会按 `<prefix>_<tool>` 暴露给模型，例如 `mcp_playwright_navig
 详细说明见 [MCP_GUIDE.md](MCP_GUIDE.md)。
 
 ## 环境变量
+
+`run_task` 和 `cli` 会自动读取启动目录和 workspace 下的 `.env` 文件。读取规则是：
+
+- 先读取 `<start_dir>/.env`，再读取 `<workspace>/.env`
+- 只填充当前环境里还不存在的变量，不覆盖 shell 中已经 export 的变量
+- `.env` 已被 `.gitignore` 忽略，避免误提交密钥
 
 SiliconFlow：
 
@@ -274,7 +284,7 @@ V5.0 已经明显不像 V1-V4 那样偏 demo，但还不是完整 Claude Code �
 - hook system 尚未实现
 - mock parity harness 尚未实现
 - LSP diagnostics 只是本地语法检查的 best-effort 版本，不是持久 language-server session
-- MCP 已支持基础 runtime layer，但真实第三方 server 的可用性仍取决于本机 Node/npm、网络、远程服务和 server 自身行为
+- MCP 已支持基础 runtime layer 和真实 Playwright MCP smoke 路径，但第三方 server 的可用性仍取决于本机 Node/npm、网络、远程服务和 server 自身行为
 - plugins 和 sub-agent orchestration 仍是后续工作
 
 ## 测试
@@ -287,7 +297,7 @@ python3 -m unittest discover -s tests -v
 期望结果：
 
 ```text
-Ran 69 tests
+Ran 72 tests
 OK
 ```
 

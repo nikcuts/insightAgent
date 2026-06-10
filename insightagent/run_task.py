@@ -8,11 +8,11 @@ import sys
 from pathlib import Path
 
 from .agent import CodeAgent
-from .config import RuntimeConfig, load_runtime_config
+from .config import RuntimeConfig, load_dotenv_files, load_runtime_config
 from .context import ContextManager, ProjectMemory, build_system_prompt, load_project_memory
 from .mcp.config import load_mcp_config
 from .mcp.manager import MCPManager
-from .providers import AnthropicClient, OpenAICompatibleClient, ProviderError
+from .providers import AnthropicClient, ModelClient, OpenAICompatibleClient, ProviderError
 from .session import Session, SessionStore
 from .smoke import SILICONFLOW_BASE_URL, SILICONFLOW_DEFAULT_MODEL
 from .tool_context import ToolContext
@@ -66,25 +66,32 @@ def build_agent(
     session_store: SessionStore,
     session: Session,
     tools: ToolRegistry | None = None,
+    client: ModelClient | None = None,
 ) -> CodeAgent:
     base_system_prompt = f"""You are InsightAgent V5.0, a complete coding-agent runtime with sessions, config, usage tracking, project memory, grep search, self-healing, and workspace-safe tools.
 You are running a real coding-task demo.
 Show a short plan in assistant text before using tools.
 Do not place full source code in assistant text; put full source code in the write_file tool arguments.
 Use grep_search to find code when useful. Use tools to inspect, write, edit, and run files.
+When you need to use a tool, emit a real provider tool_calls/function-call message.
+不要用普通文本、Markdown 或 JSON 片段模拟工具调用；只有真实 tool_calls 才会被执行。
+只有名称以 mcp_ 开头的工具才算 MCP 工具；总结 MCP 调用时不要把内置工具混在一起。
+不要重复调用已经获得足够证据的工具；如果工具结果已经包含答案，请直接总结。
 Only create or modify files inside this workspace: {workspace}
 Prefer edit_file for local changes to existing files.
 When running shell commands, set cwd to this workspace when possible."""
     system_prompt = build_system_prompt(base_system_prompt, project_memory)
-    if config.provider == "anthropic":
+    if client is not None:
+        resolved_client = client
+    elif config.provider == "anthropic":
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise ProviderError("ANTHROPIC_API_KEY is required for provider=anthropic")
-        client = AnthropicClient(model=config.model, base_url=config.base_url, timeout=config.timeout)
+        resolved_client = AnthropicClient(model=config.model, base_url=config.base_url, timeout=config.timeout)
     elif config.provider == "siliconflow":
         api_key = os.environ.get("SILICONFLOW_API_KEY") or os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise ProviderError("SILICONFLOW_API_KEY is required for provider=siliconflow")
-        client = OpenAICompatibleClient(
+        resolved_client = OpenAICompatibleClient(
             api_key=api_key,
             model=config.model or os.environ.get("SILICONFLOW_MODEL", SILICONFLOW_DEFAULT_MODEL),
             base_url=config.base_url or os.environ.get("SILICONFLOW_BASE_URL", SILICONFLOW_BASE_URL),
@@ -93,9 +100,9 @@ When running shell commands, set cwd to this workspace when possible."""
     else:
         if not os.environ.get("OPENAI_API_KEY"):
             raise ProviderError("OPENAI_API_KEY is required for provider=openai")
-        client = OpenAICompatibleClient(model=config.model, base_url=config.base_url, timeout=config.timeout)
+        resolved_client = OpenAICompatibleClient(model=config.model, base_url=config.base_url, timeout=config.timeout)
     return CodeAgent(
-        client,
+        resolved_client,
         tools=tools,
         context_manager=ContextManager(
             max_tool_output_chars=config.max_tool_output_chars,
@@ -112,6 +119,8 @@ When running shell commands, set cwd to this workspace when possible."""
 def main() -> None:
     args = build_parser().parse_args()
     workspace = Path(args.workspace).expanduser().resolve()
+    start_dir = Path.cwd().resolve()
+    load_dotenv_files(workspace, start_dir=start_dir)
     workspace.mkdir(parents=True, exist_ok=True)
     os.chdir(workspace)
     config = load_runtime_config(
@@ -161,7 +170,7 @@ def main() -> None:
         )
     tool_context = ToolContext(workspace=workspace, permission_mode=config.permission_mode)
     mcp_config_home = Path(args.config_home).expanduser() if args.config_home else None
-    mcp_config = load_mcp_config(workspace, user_config_home=mcp_config_home)
+    mcp_config = load_mcp_config(workspace, user_config_home=mcp_config_home, start_dir=start_dir)
     if tracer is not None:
         tracer({"type": "mcp_config_loaded", "loaded_config_files": mcp_config.loaded_files})
     mcp_manager = MCPManager(mcp_config)

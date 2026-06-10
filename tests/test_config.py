@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
-from insightagent.config import load_runtime_config
+from insightagent.config import load_dotenv_files, load_runtime_config
 
 
 class ConfigTests(unittest.TestCase):
@@ -40,6 +41,31 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.timeout, 99)
             self.assertEqual(config.permission_mode, "read-only")
             self.assertEqual(len(config.loaded_files), 3)
+
+    def test_load_dotenv_files_sets_missing_values_without_overriding_existing_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (root / ".env").write_text("ROOT_ONLY=root\nSHARED=root-value\n", encoding="utf-8")
+            (workspace / ".env").write_text("WORKSPACE_ONLY=workspace\nSHARED=workspace-value\n", encoding="utf-8")
+            old_values = {name: os.environ.get(name) for name in ["ROOT_ONLY", "WORKSPACE_ONLY", "SHARED"]}
+            os.environ["SHARED"] = "already-set"
+            for name in ["ROOT_ONLY", "WORKSPACE_ONLY"]:
+                os.environ.pop(name, None)
+            try:
+                loaded = load_dotenv_files(workspace, start_dir=root)
+
+                self.assertEqual(os.environ["ROOT_ONLY"], "root")
+                self.assertEqual(os.environ["WORKSPACE_ONLY"], "workspace")
+                self.assertEqual(os.environ["SHARED"], "already-set")
+                self.assertEqual(len(loaded), 2)
+            finally:
+                for name, value in old_values.items():
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
 
 
 if __name__ == "__main__":

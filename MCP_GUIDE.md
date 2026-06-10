@@ -15,11 +15,26 @@ InsightAgent 会按下面顺序读取 MCP 配置，后面的同名 server 覆盖
 
 ```text
 ~/.insightagent/mcp_config.json
+<start_dir>/.insightagent/mcp_config.json
+<start_dir>/mcp_config.json
 <workspace>/.insightagent/mcp_config.json
 <workspace>/mcp_config.json
 ```
 
+`<start_dir>` 是运行 `python3 -m insightagent.run_task` 或 `python3 -m insightagent.cli` 时所在的目录。这个设计是为了支持常见演示方式：在项目根目录放真实 `mcp_config.json`，同时把 `--workspace` 指到 `demo_mcp`、`demo_frontend` 这类临时目录。这样 MCP 配置仍会被加载，不需要复制到每个 workspace。
+
 推荐把团队可共享的 MCP server 示例放在项目配置里，把真实密钥放在环境变量或本机 local 配置中。
+
+## `.env` 自动加载
+
+`run_task` 和 `cli` 会自动读取：
+
+```text
+<start_dir>/.env
+<workspace>/.env
+```
+
+读取 `.env` 时只处理简单的 `KEY=VALUE` 行，支持单引号或双引号包裹值，不覆盖 shell 中已经存在的环境变量。`.env` 已在 `.gitignore` 中忽略，不要把真实 API key 写进 README、提交记录或共享日志。
 
 ## stdio 示例
 
@@ -40,6 +55,32 @@ InsightAgent 会按下面顺序读取 MCP 配置，后面的同名 server 覆盖
   }
 }
 ```
+
+如果服务器没有全局 `npx`，可以直接写绝对路径：
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "transport": "stdio",
+      "command": "/home/dinghanchen/.local/nodejs/bin/npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--headless",
+        "--executable-path",
+        "/home/dinghanchen/.cache/ms-playwright/chromium-1223/chrome-linux64/chrome"
+      ],
+      "enabled": true,
+      "startup_timeout": 45,
+      "request_timeout": 90,
+      "tool_prefix": "mcp_playwright"
+    }
+  }
+}
+```
+
+上面的 `--executable-path` 是一个实用绕过方案：当 Playwright MCP 自己下载浏览器失败或网络较慢时，可以使用已经安装好的 Chromium for Testing。
 
 启动非交互任务时，InsightAgent 会自动启动 enabled MCP server：
 
@@ -133,7 +174,30 @@ MCP resources 和 prompts 也会被包装为工具：
 
 ## 可选 smoke test
 
-如果本机已经安装 Node.js/npm，并且网络可访问 npm 包，可以尝试：
+如果本机已经安装 Node.js/npm，并且已经准备好 Playwright Chromium，可以尝试真实 MCP smoke test：
+
+```bash
+cd /home/dinghanchen/stuckin/insightagent_v5
+
+PATH=$HOME/.local/nodejs/bin:$PATH python3 -m insightagent.run_task \
+  --provider siliconflow \
+  --model "Qwen/Qwen2.5-72B-Instruct" \
+  --timeout 120 \
+  --max-tool-iterations 8 \
+  --trace-max-chars 3000 \
+  --workspace demo_mcp_hardened \
+  --task "请必须调用 mcp_playwright_browser_navigate 打开 https://example.com，然后调用 mcp_playwright_browser_snapshot 读取页面快照。不要只描述工具调用，必须实际调用工具。最后总结页面标题和你调用过的 MCP 工具。"
+```
+
+成功时 trace 中应能看到类似工具调用：
+
+```text
+mcp_playwright_browser_navigate
+mcp_playwright_browser_snapshot
+Page Title: Example Domain
+```
+
+也可以做一个更短的工具列表检查：
 
 ```bash
 python3 -m insightagent.run_task \

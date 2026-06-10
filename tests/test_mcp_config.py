@@ -91,6 +91,26 @@ class MCPConfigTests(unittest.TestCase):
         self.assertIsInstance(config, MCPConfig)
         self.assertEqual(config.servers, {})
 
+    def test_loads_start_directory_config_before_workspace_config(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "demo"
+            workspace.mkdir()
+            (root / "mcp_config.json").write_text(
+                json.dumps({"mcpServers": {"playwright": {"command": "npx", "args": ["root"]}}}),
+                encoding="utf-8",
+            )
+            (workspace / "mcp_config.json").write_text(
+                json.dumps({"mcpServers": {"playwright": {"args": ["workspace"]}}}),
+                encoding="utf-8",
+            )
+
+            config = load_mcp_config(workspace, user_config_home=root / "no-home", start_dir=root)
+
+        self.assertEqual(config.servers["playwright"].command, "npx")
+        self.assertEqual(config.servers["playwright"].args, ["workspace"])
+        self.assertEqual(len(config.loaded_files), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

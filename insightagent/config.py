@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,28 @@ def load_runtime_config(
     return _config_from_dict(merged, tuple(loaded))
 
 
+def load_dotenv_files(
+    workspace: str | Path,
+    start_dir: str | Path | None = None,
+) -> tuple[str, ...]:
+    """Load simple KEY=VALUE lines from .env files without overriding existing env."""
+    workspace_path = Path(workspace).expanduser().resolve()
+    candidates: list[Path] = []
+    if start_dir is not None:
+        start_path = Path(start_dir).expanduser().resolve()
+        candidates.append(start_path / ".env")
+    candidates.append(workspace_path / ".env")
+    loaded: list[str] = []
+    seen: set[Path] = set()
+    for path in candidates:
+        if path in seen or not path.is_file():
+            continue
+        seen.add(path)
+        _load_dotenv_file(path)
+        loaded.append(str(path))
+    return tuple(loaded)
+
+
 def _config_from_dict(data: dict[str, Any], loaded_files: tuple[str, ...]) -> RuntimeConfig:
     config = RuntimeConfig(loaded_files=loaded_files)
     runtime = _object_or_empty(data.get("runtime"))
@@ -88,6 +111,24 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
         else:
             merged[key] = value
     return merged
+
+
+def _load_dotenv_file(path: Path) -> None:
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        os.environ[key] = _strip_env_value(value.strip())
+
+
+def _strip_env_value(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
 
 
 def _object_or_empty(value: Any) -> dict[str, Any]:
