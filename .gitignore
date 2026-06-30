@@ -1,3 +1,4 @@
+.venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -5,4 +6,8 @@ __pycache__/
 *.egg-info/
 mcp_config.json
 .playwright-mcp/
+.insightagent/
+demo_*/
 demo_mcp*/
+workspaces/
+reports/

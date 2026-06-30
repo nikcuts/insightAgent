@@ -8,11 +8,11 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from insightagent.agent import CodeAgent
-from insightagent.messages import Message, ModelResponse, ToolCall
-from insightagent.providers import ModelClient
-from insightagent.task_state import TaskPhase
-from insightagent.tool_context import ToolContext
+from insightagent.agent.core import CodeAgent
+from insightagent.api.messages import Message, ModelResponse, ToolCall
+from insightagent.api.providers import ModelClient
+from insightagent.agent.task_state import TaskPhase
+from insightagent.runtime.tool_context import ToolContext
 from insightagent.tools import ToolRegistry
 
 

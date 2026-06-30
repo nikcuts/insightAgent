@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from insightagent.messages import Message, ToolCall
-from insightagent.session import SessionStore, render_transcript
+from insightagent.api.messages import Message, ToolCall
+from insightagent.agent.session import SessionStore, render_transcript
 
 
 class SessionTests(unittest.TestCase):

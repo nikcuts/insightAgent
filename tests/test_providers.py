@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import unittest
 
-from insightagent.messages import Message, ToolCall
-from insightagent.providers import AnthropicClient, OpenAICompatibleClient
+from insightagent.api.messages import Message, ToolCall
+from insightagent.api.providers import AnthropicClient, OpenAICompatibleClient
 
 
 class ProviderConversionTests(unittest.TestCase):

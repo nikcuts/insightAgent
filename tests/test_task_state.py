@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from insightagent.task_state import TaskPhase, TaskState, phase_instruction, transition_after_tool
+from insightagent.agent.task_state import TaskPhase, TaskState, phase_instruction, transition_after_tool
 
 
 class TaskStateTests(unittest.TestCase):

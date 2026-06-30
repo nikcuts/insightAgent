@@ -5,11 +5,11 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from insightagent.agent import CodeAgent
-from insightagent.messages import Message, ModelResponse
-from insightagent.providers import ModelClient
-from insightagent.slash_commands import SlashCommandProcessor
-from insightagent.tool_context import ToolContext
+from insightagent.agent.core import CodeAgent
+from insightagent.api.messages import Message, ModelResponse
+from insightagent.api.providers import ModelClient
+from insightagent.cli.slash_commands import SlashCommandProcessor
+from insightagent.runtime.tool_context import ToolContext
 from insightagent.tools import ToolRegistry
 
 

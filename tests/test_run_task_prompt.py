@@ -5,11 +5,11 @@ import unittest
 from pathlib import Path
 
 from insightagent.config import RuntimeConfig
-from insightagent.context import ProjectMemory
-from insightagent.messages import Message, ModelResponse
-from insightagent.providers import ModelClient
-from insightagent.run_task import build_agent
-from insightagent.session import SessionStore
+from insightagent.agent.context import ProjectMemory
+from insightagent.api.messages import Message, ModelResponse
+from insightagent.api.providers import ModelClient
+from insightagent.cli.run_task import build_agent
+from insightagent.agent.session import SessionStore
 from insightagent.tools import ToolRegistry
 
 

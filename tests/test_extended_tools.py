@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from insightagent.tool_context import PermissionDenied, ToolContext
+from insightagent.runtime.tool_context import PermissionDenied, ToolContext
 from insightagent.tools import ToolRegistry, default_tools
 
 

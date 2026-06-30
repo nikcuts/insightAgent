@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from insightagent.messages import Message, ModelResponse
-from insightagent.usage import UsageTracker, estimate_tokens
+from insightagent.api.messages import Message, ModelResponse
+from insightagent.telemetry.usage import UsageTracker, estimate_tokens
 
 
 class UsageTests(unittest.TestCase):

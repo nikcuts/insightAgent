@@ -6,7 +6,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from insightagent.tool_context import ToolContext
+from insightagent.runtime.tool_context import ToolContext
 from insightagent.tools import ToolRegistry
 
 
