@@ -49,8 +49,10 @@ class CodeAgent:
         max_nudge_attempts: int = 2,
         resilience_enabled: bool = True,
         max_wall_seconds: float | None = None,
+        delta_handler: Callable[[str], None] | None = None,
     ) -> None:
         self.model_client = model_client
+        self.delta_handler = delta_handler
         self.tools = tools or ToolRegistry()
         self.memory = memory or SlidingWindowMemory(max_messages=20)
         self.context_manager = context_manager or ContextManager()
@@ -157,6 +159,8 @@ class CodeAgent:
                     "input_tokens_est": usage_sample.input_tokens_est,
                     "output_tokens_est": usage_sample.output_tokens_est,
                     "total_tokens_est": usage_sample.input_tokens_est + usage_sample.output_tokens_est,
+                    "is_estimated": usage_sample.is_estimated,
+                    "cost_usd": usage_sample.cost_usd,
                 },
             )
             self._emit(
@@ -413,12 +417,22 @@ class CodeAgent:
         return AgentResult(content=warning, messages=list(self.messages), iterations=iteration)
 
     def _model_complete(self, messages: list[Message], schemas: list[dict[str, Any]], tool_choice: Any | None):
-        if tool_choice is None:
+        kwargs: dict[str, Any] = {}
+        if tool_choice is not None:
+            kwargs["tool_choice"] = tool_choice
+        if self.delta_handler is not None:
+            kwargs["on_delta"] = self.delta_handler
+        if not kwargs:
             return self.model_client.complete(messages, schemas)
         try:
-            return self.model_client.complete(messages, schemas, tool_choice=tool_choice)
+            return self.model_client.complete(messages, schemas, **kwargs)
         except TypeError:
-            # Model client predates the tool_choice parameter; fall back to auto.
+            # Model client predates tool_choice/on_delta; degrade gracefully.
+            if tool_choice is not None:
+                try:
+                    return self.model_client.complete(messages, schemas, tool_choice=tool_choice)
+                except TypeError:
+                    pass
             return self.model_client.complete(messages, schemas)
 
     def _forced_tool_for_phase(self) -> str | None:
@@ -554,6 +568,8 @@ class CodeAgent:
                 "input_tokens_est": self.usage_tracker.total_input_tokens_est,
                 "output_tokens_est": self.usage_tracker.total_output_tokens_est,
                 "total_tokens_est": self.usage_tracker.total_tokens_est,
+                "cost_usd": self.usage_tracker.total_cost_usd,
+                "source": self.usage_tracker.source,
             }
             self.session.metadata["task_state"] = {
                 "phase": self.task_state.phase.value,

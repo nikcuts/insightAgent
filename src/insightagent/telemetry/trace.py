@@ -51,12 +51,15 @@ class ConsoleTracer:
                 f"repair prompted after {event['failed_tool']} id={event['tool_call_id']}",
             )
         elif event_type == "usage_recorded":
+            source = "estimated" if event.get("is_estimated", True) else "actual"
+            cost = event.get("cost_usd", 0.0)
             self._section(
                 "USAGE",
                 (
                     f"input_tokens_est={event['input_tokens_est']} "
                     f"output_tokens_est={event['output_tokens_est']} "
-                    f"total_tokens_est={event['total_tokens_est']}"
+                    f"total_tokens_est={event['total_tokens_est']} "
+                    f"source={source} cost_usd={cost:.6f}"
                 ),
             )
         elif event_type == "session_started":

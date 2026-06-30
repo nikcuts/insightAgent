@@ -25,7 +25,7 @@ class TaskState:
     last_error: str | None = None
 
 
-IMPLEMENTATION_TOOLS = {"write_file", "edit_file", "todo_write"}
+IMPLEMENTATION_TOOLS = {"write_file", "edit_file", "apply_edits", "todo_write"}
 VERIFICATION_TOOLS = {"execute_command", "run_verification", "lsp_diagnostics"}
 
 

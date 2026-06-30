@@ -24,6 +24,7 @@ class RuntimeConfig:
     trace_max_chars: int = 1000
     session_dir: str = ".insightagent/sessions"
     response_language: str = "auto"
+    stream: bool = False
     loaded_files: tuple[str, ...] = ()
 
 
@@ -106,6 +107,7 @@ def _config_from_dict(data: dict[str, Any], loaded_files: tuple[str, ...]) -> Ru
         "response_language": runtime.get(
             "response_language", data.get("response_language", data.get("language"))
         ),
+        "stream": runtime.get("stream", data.get("stream")),
     }
     updates = {key: value for key, value in flattened.items() if value is not None}
     return replace(config, **updates)
@@ -183,6 +185,7 @@ def _normalize_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
             "max_tool_output_chars",
             "compact_tool_output_chars",
             "response_language",
+            "stream",
         }:
             normalized = _deep_merge(normalized, {"runtime": {key: value}})
         elif key == "language":

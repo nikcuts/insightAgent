@@ -7,9 +7,9 @@ import os
 import urllib.error
 import urllib.request
 from socket import timeout as SocketTimeout
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
-from .messages import Message, ModelResponse, ToolCall
+from .messages import Message, ModelResponse, TokenUsage, ToolCall
 from .resilience import loads_lenient
 
 
@@ -19,6 +19,7 @@ class ModelClient(Protocol):
         messages: list[Message],
         tools: list[dict[str, Any]],
         tool_choice: Any | None = None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> ModelResponse:
         ...
 
@@ -53,6 +54,7 @@ class OpenAICompatibleClient:
         temperature: float = 0.01,
         top_p: float = 0.95,
         max_tokens: int = 4096,
+        stream: bool = False,
     ) -> None:
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.model = model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
@@ -61,6 +63,7 @@ class OpenAICompatibleClient:
         self.temperature = temperature
         self.top_p = top_p
         self.max_tokens = max_tokens
+        self.stream = stream
         if not self.api_key:
             raise ValueError("OPENAI_API_KEY is required")
 
@@ -69,11 +72,13 @@ class OpenAICompatibleClient:
         messages: list[Message],
         tools: list[dict[str, Any]],
         tool_choice: Any | None = None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> ModelResponse:
-        payload = {
+        streaming = self.stream or on_delta is not None
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": [self._message_to_openai(message) for message in messages],
-            "stream": False,
+            "stream": streaming,
             "temperature": self.temperature,
             "top_p": self.top_p,
             "max_tokens": self.max_tokens,
@@ -81,6 +86,9 @@ class OpenAICompatibleClient:
         if tools:
             payload["tools"] = [self._tool_to_openai(tool) for tool in tools]
             payload["tool_choice"] = tool_choice or "auto"
+        if streaming:
+            payload["stream_options"] = {"include_usage": True}
+            return self._complete_streaming(f"{self.base_url}/chat/completions", payload, on_delta)
         data = self._post(f"{self.base_url}/chat/completions", payload)
         choice = data["choices"][0]["message"]
         tool_calls = []
@@ -100,7 +108,54 @@ class OpenAICompatibleClient:
                     arguments=parsed_arguments,
                 )
             )
-        return ModelResponse(content=choice.get("content") or "", tool_calls=tool_calls)
+        return ModelResponse(
+            content=choice.get("content") or "",
+            tool_calls=tool_calls,
+            usage=_openai_usage(data.get("usage")),
+        )
+
+    def _complete_streaming(
+        self, url: str, payload: dict[str, Any], on_delta: Callable[[str], None] | None
+    ) -> ModelResponse:
+        accumulator = StreamAccumulator()
+        for chunk in self._stream_post(url, payload):
+            accumulator.add(chunk, on_delta=on_delta)
+        return accumulator.build_response()
+
+    def _stream_post(self, url: str, payload: dict[str, Any]):
+        body = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            url,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                for raw_line in response:
+                    line = raw_line.decode("utf-8").strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        yield json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+        except (TimeoutError, SocketTimeout) as error:
+            raise ProviderError(
+                f"OpenAI-compatible provider timed out after {self.timeout}s during streaming."
+            ) from error
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")
+            raise ProviderError(f"OpenAI-compatible provider error {error.code}: {detail}") from error
+        except urllib.error.URLError as error:
+            raise ProviderError(f"OpenAI-compatible provider connection error: {error.reason}") from error
 
     def _post(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
@@ -211,7 +266,11 @@ class AnthropicClient:
                         arguments=block.get("input") or {},
                     )
                 )
-        return ModelResponse(content="\n".join(part for part in text_parts if part), tool_calls=tool_calls)
+        return ModelResponse(
+            content="\n".join(part for part in text_parts if part),
+            tool_calls=tool_calls,
+            usage=_anthropic_usage(data.get("usage")),
+        )
 
     def _post(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
@@ -260,3 +319,79 @@ class AnthropicClient:
             )
             return {"role": "assistant", "content": content}
         return {"role": message.role, "content": message.content}
+
+
+class StreamAccumulator:
+    """Reduce OpenAI streaming chunks into a single ModelResponse.
+
+    Kept separate from the HTTP path so the (fiddly) delta-merging logic can be
+    unit-tested deterministically without a network connection.
+    """
+
+    def __init__(self) -> None:
+        self._content_parts: list[str] = []
+        self._tool_state: dict[int, dict[str, Any]] = {}
+        self._usage_raw: Any = None
+
+    def add(self, chunk: dict[str, Any], on_delta: Callable[[str], None] | None = None) -> None:
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta") or {}
+            piece = delta.get("content")
+            if piece:
+                self._content_parts.append(piece)
+                if on_delta is not None:
+                    on_delta(piece)
+            for raw_call in delta.get("tool_calls") or []:
+                index = raw_call.get("index", 0)
+                slot = self._tool_state.setdefault(index, {"id": None, "name": None, "arguments": ""})
+                if raw_call.get("id"):
+                    slot["id"] = raw_call["id"]
+                function = raw_call.get("function") or {}
+                if function.get("name"):
+                    slot["name"] = function["name"]
+                if function.get("arguments"):
+                    slot["arguments"] += function["arguments"]
+        if chunk.get("usage"):
+            self._usage_raw = chunk["usage"]
+
+    def build_response(self) -> ModelResponse:
+        tool_calls: list[ToolCall] = []
+        for index in sorted(self._tool_state):
+            slot = self._tool_state[index]
+            name = slot["name"]
+            if not name:
+                continue
+            raw_arguments = slot["arguments"] or "{}"
+            parsed_arguments, _repaired = loads_lenient(raw_arguments)
+            if not isinstance(parsed_arguments, dict):
+                raise ToolArgumentsParseError(
+                    name, raw_arguments, "streamed tool arguments are not valid JSON"
+                )
+            tool_calls.append(
+                ToolCall(id=slot["id"] or f"stream_{index}", name=name, arguments=parsed_arguments)
+            )
+        return ModelResponse(
+            content="".join(self._content_parts),
+            tool_calls=tool_calls,
+            usage=_openai_usage(self._usage_raw),
+        )
+
+
+def _openai_usage(raw: Any) -> TokenUsage | None:
+    if not isinstance(raw, dict):
+        return None
+    prompt = raw.get("prompt_tokens")
+    completion = raw.get("completion_tokens")
+    if prompt is None and completion is None:
+        return None
+    return TokenUsage(input_tokens=int(prompt or 0), output_tokens=int(completion or 0))
+
+
+def _anthropic_usage(raw: Any) -> TokenUsage | None:
+    if not isinstance(raw, dict):
+        return None
+    input_tokens = raw.get("input_tokens")
+    output_tokens = raw.get("output_tokens")
+    if input_tokens is None and output_tokens is None:
+        return None
+    return TokenUsage(input_tokens=int(input_tokens or 0), output_tokens=int(output_tokens or 0))

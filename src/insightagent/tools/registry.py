@@ -26,7 +26,8 @@ from .code_analysis_tools import (
     ParseAstTool,
 )
 from .execution_tools import ExecuteCommandTool, RunVerificationTool
-from .file_tools import EditFileTool, ReadFileTool, WriteFileTool
+from .file_tools import ApplyEditsTool, EditFileTool, ReadFileTool, WriteFileTool
+from .repo_tools import FindSymbolTool, RepoMapTool
 from .search_tools import GrepSearchTool, GlobSearchTool
 from .state_tools import GitDiffTool, GitStatusTool, LspDiagnosticsTool, TodoWriteTool
 
@@ -224,8 +225,11 @@ def default_tools(context: ToolContext | None = None) -> list[Tool]:
         ReadFileTool(resolved_context),
         WriteFileTool(resolved_context),
         EditFileTool(resolved_context),
+        ApplyEditsTool(resolved_context),
         GrepSearchTool(resolved_context),
         GlobSearchTool(resolved_context),
+        RepoMapTool(resolved_context),
+        FindSymbolTool(resolved_context),
         GitStatusTool(resolved_context),
         GitDiffTool(resolved_context),
         TodoWriteTool(resolved_context),
@@ -245,7 +249,7 @@ def _spec_for_tool(tool: Tool) -> ToolSpec:
     executes = False
     uses_network = False
     tags: tuple[str, ...] = ()
-    if name in {"write_file", "edit_file", "todo_write"}:
+    if name in {"write_file", "edit_file", "apply_edits", "todo_write"}:
         permission = ToolPermission.WORKSPACE_WRITE
         risk = ToolRisk.MEDIUM
         mutates = True
@@ -267,7 +271,15 @@ def _spec_for_tool(tool: Tool) -> ToolSpec:
         tags = ("mcp", "external")
     elif name in {"read_file", "grep_search", "glob_search", "git_status", "git_diff"}:
         tags = ("workspace", "read")
-    elif name in {"parse_ast", "get_function_signature", "find_dependencies", "get_code_metrics", "lsp_diagnostics"}:
+    elif name in {
+        "parse_ast",
+        "get_function_signature",
+        "find_dependencies",
+        "get_code_metrics",
+        "lsp_diagnostics",
+        "repo_map",
+        "find_symbol",
+    }:
         tags = ("analysis", "read")
     return ToolSpec(
         name=name,

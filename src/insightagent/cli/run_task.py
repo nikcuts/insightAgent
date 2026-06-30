@@ -47,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--task", default=DEFAULT_TASK, help="Task prompt.")
     parser.add_argument("--no-trace", action="store_true", help="Only print the final answer.")
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        default=None,
+        help="Stream model output token-by-token to the console as it is generated.",
+    )
     parser.add_argument("--timeout", type=int, help="Provider HTTP timeout in seconds.")
     parser.add_argument("--max-tool-iterations", type=int, help="Maximum model/tool loop iterations.")
     parser.add_argument(
@@ -145,6 +151,7 @@ Worked example of the expected tool-driven workflow:
             base_url=config.base_url or os.environ.get("SILICONFLOW_BASE_URL", SILICONFLOW_BASE_URL),
             timeout=config.timeout,
             max_tokens=config.max_output_tokens,
+            stream=config.stream,
         )
     else:
         if not os.environ.get("OPENAI_API_KEY"):
@@ -154,6 +161,7 @@ Worked example of the expected tool-driven workflow:
             base_url=config.base_url,
             timeout=config.timeout,
             max_tokens=config.max_output_tokens,
+            stream=config.stream,
         )
     return CodeAgent(
         resolved_client,
@@ -194,6 +202,7 @@ def main() -> None:
             "trace_max_chars": args.trace_max_chars,
             "session_dir": args.session_dir,
             "response_language": args.language,
+            "stream": args.stream,
         },
     )
     session_root = Path(config.session_dir)
@@ -263,6 +272,12 @@ def main() -> None:
         )
         if args.allow_no_tool_final:
             agent.require_tool_use = False
+        if config.stream and not args.no_trace:
+            def _emit_delta(piece: str) -> None:
+                sys.stdout.write(piece)
+                sys.stdout.flush()
+
+            agent.delta_handler = _emit_delta
         result = agent.run_turn_with_trace(task, trace=tracer)
     except ProviderError as error:
         print(f"\nProvider error: {error}", file=sys.stderr)
