@@ -94,7 +94,7 @@ class FailureClassifier:
                     "same command; inspect available files/tools or report the environment blocker."
                 ),
             )
-        if _matches(lowered, self.test_patterns) and tool_name == "execute_command":
+        if _matches(lowered, self.test_patterns) and tool_name in {"execute_command", "run_verification"}:
             return FailureClassification(
                 FailureKind.TEST_FAILURE,
                 retryable=False,

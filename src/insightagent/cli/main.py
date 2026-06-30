@@ -6,7 +6,7 @@ import argparse
 import os
 from pathlib import Path
 
-from ..config import load_dotenv_files, load_runtime_config
+from ..config import language_directive, load_dotenv_files, load_runtime_config
 from ..agent.context import ContextManager, build_system_prompt, load_project_memory
 from ..agent.core import CodeAgent
 from ..mcp.config import load_mcp_config
@@ -34,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--session-id")
     parser.add_argument("--session-dir")
     parser.add_argument("--permission-mode", choices=["read-only", "workspace-write"])
+    parser.add_argument(
+        "--language",
+        help="Language for the model's replies (e.g. Chinese, English). "
+        "Defaults to auto, which mirrors the user's language.",
+    )
     parser.add_argument("--config-home")
     parser.add_argument(
         "--tool-profile",
@@ -68,6 +73,7 @@ def main() -> None:
             "model": args.model,
             "permission_mode": args.permission_mode,
             "session_dir": args.session_dir,
+            "response_language": args.language,
         },
     )
     session_root = Path(config.session_dir)
@@ -80,7 +86,8 @@ def main() -> None:
     project_memory = load_project_memory(workspace)
     base_prompt = f"""You are InsightAgent V5.0 interactive CLI.
 Workspace: {workspace}
-Use workspace-safe tools. Use slash commands only when the user types them directly."""
+Use workspace-safe tools. Use slash commands only when the user types them directly.
+{language_directive(config.response_language)}"""
     system_prompt = build_system_prompt(base_prompt, project_memory)
 
     if config.provider == "anthropic":

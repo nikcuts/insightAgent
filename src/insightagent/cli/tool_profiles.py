@@ -11,6 +11,7 @@ from ..tools.base import Tool
 CODING_BASIC_TOOLS = frozenset(
     {
         "execute_command",
+        "run_verification",
         "read_file",
         "write_file",
         "edit_file",

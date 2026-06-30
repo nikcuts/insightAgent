@@ -202,6 +202,15 @@ class AgentLoopTests(unittest.TestCase):
                             )
                         ]
                     ),
+                    ModelResponse(
+                        tool_calls=[
+                            ToolCall(
+                                id="call_2",
+                                name="run_verification",
+                                arguments={"command": "python3 -c \"print('ok')\""},
+                            )
+                        ]
+                    ),
                     ModelResponse(content="done"),
                 ]
             )
@@ -217,6 +226,49 @@ class AgentLoopTests(unittest.TestCase):
             self.assertEqual(result.content, "done")
             self.assertEqual(path.read_text(encoding="utf-8"), "ok")
             self.assertTrue(any(event["type"] == "tool_use_required" for event in events))
+
+    def test_implement_without_verification_is_nudged_not_finalized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeModelClient(
+                [
+                    ModelResponse(
+                        tool_calls=[
+                            ToolCall(
+                                id="call_1",
+                                name="write_file",
+                                arguments={"path": "main.py", "content": "print('hi')\n"},
+                            )
+                        ]
+                    ),
+                    # The model tries to stop after writing but before verifying. The
+                    # runtime must keep steering it instead of accepting this as final.
+                    ModelResponse(content="I have created the file. Next I will verify it."),
+                    ModelResponse(
+                        tool_calls=[
+                            ToolCall(id="call_2", name="run_verification", arguments={}),
+                        ]
+                    ),
+                    ModelResponse(content="done"),
+                ]
+            )
+            agent = CodeAgent(
+                client,
+                tools=ToolRegistry(context=ToolContext(workspace=Path(directory))),
+                require_tool_use=True,
+            )
+            events: list[dict[str, Any]] = []
+
+            result = agent.run_turn_with_trace("Create and verify a script", trace=events.append)
+
+            self.assertEqual(result.content, "done")
+            self.assertGreaterEqual(len(client.calls), 4)
+            self.assertTrue(any(event["type"] == "tool_use_required" for event in events))
+            self.assertTrue(
+                any(
+                    event["type"] == "tool_result" and event["name"] == "run_verification"
+                    for event in events
+                )
+            )
 
     def test_malformed_tool_arguments_enter_repair_loop(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

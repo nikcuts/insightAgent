@@ -6,10 +6,47 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from insightagent.config import load_dotenv_files, load_runtime_config
+from insightagent.config import language_directive, load_dotenv_files, load_runtime_config
 
 
 class ConfigTests(unittest.TestCase):
+    def test_response_language_defaults_to_auto(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = load_runtime_config(Path(directory))
+
+        self.assertEqual(config.response_language, "auto")
+
+    def test_language_override_maps_to_response_language(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = load_runtime_config(Path(directory), overrides={"language": "Chinese"})
+
+        self.assertEqual(config.response_language, "Chinese")
+
+    def test_response_language_loaded_from_runtime_config(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            (workspace / ".insightagent").mkdir(parents=True)
+            (workspace / ".insightagent" / "config.json").write_text(
+                json.dumps({"runtime": {"response_language": "Japanese"}}),
+                encoding="utf-8",
+            )
+
+            config = load_runtime_config(workspace)
+
+        self.assertEqual(config.response_language, "Japanese")
+
+    def test_language_directive_auto_mentions_mirroring(self) -> None:
+        directive = language_directive("auto")
+
+        self.assertIn("same language", directive)
+
+    def test_language_directive_explicit_pins_language(self) -> None:
+        directive = language_directive("Chinese")
+
+        self.assertIn("Chinese", directive)
+
+
+class ConfigMergeTests(unittest.TestCase):
     def test_merges_user_project_local_and_cli_overrides(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

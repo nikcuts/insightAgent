@@ -25,7 +25,7 @@ from .code_analysis_tools import (
     GetFunctionSignatureTool,
     ParseAstTool,
 )
-from .execution_tools import ExecuteCommandTool
+from .execution_tools import ExecuteCommandTool, RunVerificationTool
 from .file_tools import EditFileTool, ReadFileTool, WriteFileTool
 from .search_tools import GrepSearchTool, GlobSearchTool
 from .state_tools import GitDiffTool, GitStatusTool, LspDiagnosticsTool, TodoWriteTool
@@ -220,6 +220,7 @@ def default_tools(context: ToolContext | None = None) -> list[Tool]:
     resolved_context = context or ToolContext(workspace=Path.cwd())
     return [
         ExecuteCommandTool(resolved_context),
+        RunVerificationTool(resolved_context),
         ReadFileTool(resolved_context),
         WriteFileTool(resolved_context),
         EditFileTool(resolved_context),
@@ -254,6 +255,11 @@ def _spec_for_tool(tool: Tool) -> ToolSpec:
         risk = ToolRisk.HIGH
         executes = True
         tags = ("shell", "command")
+    elif name == "run_verification":
+        permission = ToolPermission.EXECUTE
+        risk = ToolRisk.HIGH
+        executes = True
+        tags = ("shell", "verify")
     elif name.startswith("mcp_"):
         permission = ToolPermission.MCP
         risk = ToolRisk.MEDIUM
@@ -281,7 +287,7 @@ def _tool_signature(name: str, arguments: dict[str, Any]) -> str:
 
 
 def _looks_like_error(name: str, content: str) -> bool:
-    if name == "execute_command":
+    if name in {"execute_command", "run_verification"}:
         return not content.startswith("exit_code: 0\n")
     return False
 

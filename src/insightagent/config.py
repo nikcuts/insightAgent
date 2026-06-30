@@ -23,6 +23,7 @@ class RuntimeConfig:
     permission_mode: str = "workspace-write"
     trace_max_chars: int = 1000
     session_dir: str = ".insightagent/sessions"
+    response_language: str = "auto"
     loaded_files: tuple[str, ...] = ()
 
 
@@ -102,6 +103,9 @@ def _config_from_dict(data: dict[str, Any], loaded_files: tuple[str, ...]) -> Ru
         "permission_mode": permissions.get("mode", data.get("permission_mode")),
         "trace_max_chars": tracing.get("max_chars", data.get("trace_max_chars")),
         "session_dir": sessions.get("dir", data.get("session_dir")),
+        "response_language": runtime.get(
+            "response_language", data.get("response_language", data.get("language"))
+        ),
     }
     updates = {key: value for key, value in flattened.items() if value is not None}
     return replace(config, **updates)
@@ -139,6 +143,27 @@ def _object_or_empty(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def language_directive(language: str | None) -> str:
+    """Build a system-prompt directive that controls the model's reply language.
+
+    ``"auto"`` (the default) tells the model to mirror the user's language, so a
+    Chinese task yields Chinese plans/summaries without extra configuration. Any
+    other value pins the assistant-visible text to that language.
+    """
+
+    value = (language or "auto").strip()
+    if value.lower() in {"", "auto"}:
+        return (
+            "Respond in the same language as the user's most recent request. For example, if the "
+            "user writes in Chinese, write your plan, explanations, and final summary in Chinese. "
+            "Keep code, identifiers, file names, and shell commands in their original form."
+        )
+    return (
+        f"Always write your assistant-visible text (plans, explanations, and summaries) in {value}. "
+        "Keep code, identifiers, file names, and shell commands in their original form."
+    )
+
+
 def _normalize_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     for key, value in overrides.items():
@@ -157,8 +182,11 @@ def _normalize_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
             "max_wall_seconds",
             "max_tool_output_chars",
             "compact_tool_output_chars",
+            "response_language",
         }:
             normalized = _deep_merge(normalized, {"runtime": {key: value}})
+        elif key == "language":
+            normalized = _deep_merge(normalized, {"runtime": {"response_language": value}})
         elif key == "permission_mode":
             normalized = _deep_merge(normalized, {"permissions": {"mode": value}})
         elif key == "trace_max_chars":

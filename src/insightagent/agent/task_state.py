@@ -26,18 +26,27 @@ class TaskState:
 
 
 IMPLEMENTATION_TOOLS = {"write_file", "edit_file", "todo_write"}
-VERIFICATION_TOOLS = {"execute_command", "lsp_diagnostics"}
+VERIFICATION_TOOLS = {"execute_command", "run_verification", "lsp_diagnostics"}
 
 
 def phase_instruction(state: TaskState) -> str:
     if state.phase == TaskPhase.PLAN:
         guidance = "Produce a short plan, then use tools for real work."
     elif state.phase == TaskPhase.IMPLEMENT:
-        guidance = "Inspect, create, or edit files. Move toward a concrete verification command."
+        guidance = (
+            "Inspect, create, or edit files. When the code is in place, call `run_verification` "
+            "to test/compile the project."
+        )
     elif state.phase == TaskPhase.VERIFY:
-        guidance = "Run diagnostics or verification commands and report exact results."
+        guidance = (
+            "Call `run_verification` (it auto-detects pytest / npm test / python compile) and "
+            "report the exact exit_code and output."
+        )
     elif state.phase == TaskPhase.REPAIR:
-        guidance = "Use the latest error to fix the issue, then verify again."
+        guidance = (
+            "Use the latest error to edit the code, then call `run_verification` again until it "
+            "passes."
+        )
     elif state.phase == TaskPhase.SUMMARIZE:
         guidance = "Give the final summary with changed files, verification, and remaining risks."
     elif state.phase == TaskPhase.FAILED:
@@ -84,7 +93,7 @@ def _enter_repair_or_failed(state: TaskState, error: str) -> None:
 
 
 def _verification_succeeded(tool_name: str, tool_content: str) -> bool:
-    if tool_name == "execute_command":
+    if tool_name in {"execute_command", "run_verification"}:
         return tool_content.startswith("exit_code: 0\n")
     if tool_name == "lsp_diagnostics":
         return tool_content.strip() == "no diagnostics"

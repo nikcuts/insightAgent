@@ -18,7 +18,8 @@ from ..telemetry.usage import UsageTracker
 
 
 DEFAULT_SYSTEM_PROMPT = """You are InsightAgent V5.0, a coding agent runtime with sessions, usage tracking, grep search, and self-healing repair loops.
-Use tools when needed. Be direct, and report tool errors clearly."""
+Use tools when needed. After writing or editing code, call `run_verification` to test/compile the project, and keep editing and re-verifying until it passes.
+Be direct, and report tool errors clearly."""
 
 TraceHandler = Callable[[dict[str, Any]], None]
 
@@ -204,11 +205,20 @@ class CodeAgent:
                     nudge_attempts = 0
                     # Fall through to the tool-execution loop with the recovered calls.
                 else:
+                    # The task has implemented something but has not yet reached a
+                    # successful verification (SUMMARIZE). A weak model often stops here
+                    # with a "next I will..." message and no tool call; treat that as
+                    # unfinished and keep steering it toward run_verification instead of
+                    # accepting the dangling text as the final answer.
+                    needs_verification = self.task_state.phase in {
+                        TaskPhase.IMPLEMENT,
+                        TaskPhase.REPAIR,
+                    }
                     if self.resilience_enabled:
                         should_nudge = (
                             self.require_tool_use
                             and not failed_phase
-                            and (not saw_tool_call or pending_repair)
+                            and (not saw_tool_call or pending_repair or needs_verification)
                             and nudge_attempts < self.max_nudge_attempts
                         )
                     else:
@@ -221,7 +231,7 @@ class CodeAgent:
                             forced_tool = self._forced_tool_for_phase()
                             if nudge_attempts >= 2 and forced_tool is not None:
                                 next_tool_choice = {"force_tool": forced_tool}
-                            nudge_content = self._nudge_prompt(nudge_attempts, forced_tool)
+                            nudge_content = self._nudge_prompt(nudge_attempts, forced_tool, needs_verification)
                         else:
                             forced_tool = None
                             nudge_content = (
@@ -413,14 +423,23 @@ class CodeAgent:
 
     def _forced_tool_for_phase(self) -> str | None:
         available = {tool["name"] for tool in self.tools.schemas()}
-        if self.task_state.phase == TaskPhase.VERIFY and "execute_command" in available:
-            return "execute_command"
-        for name in ("write_file", "edit_file", "execute_command"):
+        if self.task_state.phase == TaskPhase.VERIFY:
+            for name in ("run_verification", "execute_command"):
+                if name in available:
+                    return name
+        for name in ("write_file", "edit_file", "run_verification", "execute_command"):
             if name in available:
                 return name
         return next(iter(sorted(available)), None)
 
-    def _nudge_prompt(self, attempt: int, forced_tool: str | None) -> str:
+    def _nudge_prompt(self, attempt: int, forced_tool: str | None, needs_verification: bool = False) -> str:
+        verification_reminder = (
+            " You have written or edited code but have NOT verified it yet. Do not stop or only "
+            "describe the next step: take the next concrete action (write any remaining files, then "
+            "call `run_verification`) and keep going until run_verification reports exit_code 0."
+            if needs_verification
+            else ""
+        )
         if attempt >= 2 and forced_tool is not None:
             return (
                 "You still returned no tool call. This task requires real tool execution, not a description. "
@@ -428,12 +447,14 @@ class CodeAgent:
                 "Do not put the answer only in prose or markdown. If your runtime cannot emit a native tool "
                 "call, output exactly one line in this protocol and nothing else: "
                 f"<tool_call>{{\"name\": \"{forced_tool}\", \"arguments\": {{...}}}}</tool_call>"
+                + verification_reminder
             )
         return (
             "You returned no tool calls, but this task requires actual tool execution. Call an available tool "
             "directly now with valid JSON arguments. Do not put the final code only in prose or markdown. "
             "Example of the textual tool-call protocol the runtime accepts: "
             "<tool_call>{\"name\": \"write_file\", \"arguments\": {\"path\": \"main.py\", \"content\": \"...\"}}</tool_call>"
+            + verification_reminder
         )
 
     def _execute_tool_call(self, tool_call_id: str, name: str, arguments: dict[str, Any]) -> Message:

@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from ..agent.core import CodeAgent
-from ..config import RuntimeConfig, load_dotenv_files, load_runtime_config
+from ..config import RuntimeConfig, language_directive, load_dotenv_files, load_runtime_config
 from ..agent.context import ContextManager, ProjectMemory, build_system_prompt, load_project_memory
 from ..mcp.config import load_mcp_config
 from ..mcp.manager import MCPManager
@@ -80,6 +80,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Opt in to MCP servers by config name. Repeat or use comma-separated names; use all for every configured server.",
     )
     parser.add_argument("--permission-mode", choices=["read-only", "workspace-write"])
+    parser.add_argument(
+        "--language",
+        help="Language for the model's plans/summaries (e.g. Chinese, English). "
+        "Defaults to auto, which mirrors the user's language.",
+    )
     parser.add_argument("--session-id", help="Resume an existing session id.")
     parser.add_argument("--session-dir", help="Override session directory.")
     parser.add_argument("--export-transcript", help="Export the final session transcript to Markdown.")
@@ -122,6 +127,7 @@ Worked example of the expected tool-driven workflow:
 2. call write_file with {{"path": "calculator.py", "content": "<full source>"}}
 3. call execute_command with {{"command": "python3 calculator.py"}}
 4. assistant text: final summary of files changed and verification output."""
+    base_system_prompt = f"{base_system_prompt}\n{language_directive(config.response_language)}"
     system_prompt = build_system_prompt(base_system_prompt, project_memory)
     if client is not None:
         resolved_client = client
@@ -187,6 +193,7 @@ def main() -> None:
             "permission_mode": args.permission_mode,
             "trace_max_chars": args.trace_max_chars,
             "session_dir": args.session_dir,
+            "response_language": args.language,
         },
     )
     session_root = Path(config.session_dir)
