@@ -7,11 +7,11 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
-from ..resilience import BACKOFF_FAILURE_KINDS, PERMANENT_FAILURE_KINDS, RetryPolicy
+from ..api.resilience import BACKOFF_FAILURE_KINDS, PERMANENT_FAILURE_KINDS, RetryPolicy
 from ..runtime.failure_classifier import FailureClassifier, FailureKind
 from ..runtime.permissions import PermissionEnforcer
 from ..runtime.types import ToolExecutionResult, ToolPermission, ToolRisk, ToolSpec
-from ..tool_context import ToolContext
+from ..runtime.tool_context import ToolContext
 
 
 DUPLICATE_CALL_MESSAGE = (

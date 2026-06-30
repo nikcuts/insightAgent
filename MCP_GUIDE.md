@@ -21,7 +21,7 @@ InsightAgent 会按下面顺序读取 MCP 配置，后面的同名 server 覆盖
 <workspace>/mcp_config.json
 ```
 
-`<start_dir>` 是运行 `python3 -m insightagent.run_task` 或 `python3 -m insightagent.cli` 时所在的目录。这个设计是为了支持常见演示方式：在项目根目录放真实 `mcp_config.json`，同时把 `--workspace` 指到 `demo_mcp`、`demo_frontend` 这类临时目录。这样 MCP 配置仍会被加载，不需要复制到每个 workspace。
+`<start_dir>` 是运行 `python3 -m insightagent.run_task` 或 `python3 -m insightagent.cli` 时所在的目录。这个设计是为了支持常见运行方式：在项目根目录放真实 `mcp_config.json`，同时把 `--workspace` 指到 `workspaces/<task>` 这类临时工作区。这样 MCP 配置仍会被加载，不需要复制到每个 workspace。
 
 推荐把团队可共享的 MCP server 示例放在项目配置里，把真实密钥放在环境变量或本机 local 配置中。
 
@@ -82,13 +82,16 @@ InsightAgent 会按下面顺序读取 MCP 配置，后面的同名 server 覆盖
 
 上面的 `--executable-path` 是一个实用绕过方案：当 Playwright MCP 自己下载浏览器失败或网络较慢时，可以使用已经安装好的 Chromium for Testing。
 
-启动非交互任务时，InsightAgent 会自动启动 enabled MCP server：
+启动非交互任务时，InsightAgent 会读取 MCP 配置，但只有显式选择 MCP profile 或 server 时才会启动对应 server：
 
 ```bash
 python3 -m insightagent.run_task \
-  --workspace demo_mcp \
+  --tool-profile mcp-playwright \
+  --workspace workspaces/mcp_tools \
   --task "列出当前可用 MCP 工具。"
 ```
+
+默认 `--tool-profile coding-basic` 不启动 MCP。也可以使用 `--enable-mcp-server playwright` 或 `--enable-mcp-server all` 对本次运行启用配置中的 server。
 
 ## Streamable HTTP 示例
 
@@ -185,7 +188,8 @@ PATH=$HOME/.local/nodejs/bin:$PATH python3 -m insightagent.run_task \
   --timeout 120 \
   --max-tool-iterations 8 \
   --trace-max-chars 3000 \
-  --workspace demo_mcp_hardened \
+  --tool-profile mcp-playwright \
+  --workspace workspaces/mcp_smoke \
   --task "请必须调用 mcp_playwright_browser_navigate 打开 https://example.com，然后调用 mcp_playwright_browser_snapshot 读取页面快照。不要只描述工具调用，必须实际调用工具。最后总结页面标题和你调用过的 MCP 工具。"
 ```
 
@@ -201,7 +205,8 @@ Page Title: Example Domain
 
 ```bash
 python3 -m insightagent.run_task \
-  --workspace demo_mcp \
+  --tool-profile mcp-playwright \
+  --workspace workspaces/mcp_smoke \
   --task "列出当前可用 MCP 工具，并尝试使用 Playwright 打开 https://example.com 获取页面标题。"
 ```
 

@@ -6,16 +6,16 @@ import argparse
 import os
 from pathlib import Path
 
-from .config import load_dotenv_files, load_runtime_config
-from .context import ContextManager, build_system_prompt, load_project_memory
-from .agent import CodeAgent
-from .mcp.config import load_mcp_config
-from .mcp.manager import MCPManager
-from .providers import AnthropicClient, OpenAICompatibleClient
-from .session import SessionStore
+from ..config import load_dotenv_files, load_runtime_config
+from ..agent.context import ContextManager, build_system_prompt, load_project_memory
+from ..agent.core import CodeAgent
+from ..mcp.config import load_mcp_config
+from ..mcp.manager import MCPManager
+from ..api.providers import AnthropicClient, OpenAICompatibleClient
+from ..agent.session import SessionStore
 from .slash_commands import SlashCommandProcessor
 from .smoke import SILICONFLOW_BASE_URL, SILICONFLOW_DEFAULT_MODEL
-from .tool_context import ToolContext
+from ..runtime.tool_context import ToolContext
 from .tool_profiles import (
     TOOL_PROFILE_CHOICES,
     filter_tools,
@@ -23,7 +23,7 @@ from .tool_profiles import (
     resolve_mcp_server_names,
     select_mcp_config,
 )
-from .tools import ToolRegistry, default_tools
+from ..tools import ToolRegistry, default_tools
 
 
 def build_parser() -> argparse.ArgumentParser:

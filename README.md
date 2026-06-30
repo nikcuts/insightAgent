@@ -62,7 +62,7 @@ V5 流程：
 加载配置
 -> 创建或恢复 session
 -> 加载项目 memory
--> 启动 enabled MCP servers 并加载 MCP tools/resources/prompts
+-> 按 tool profile 选择内置工具和显式启用的 MCP servers
 -> 组装 system prompt
 -> 运行模型/工具循环
 -> 注入阶段指导并跟踪任务生命周期
@@ -70,6 +70,19 @@ V5 流程：
 -> 持久化 messages 和 metadata
 -> 支持 slash command 检查、导出和压缩
 ```
+
+## Runtime Harness
+
+当前版本把参考工程 `/home/dinghanchen/stuckin/claw-code-parity` 的 harness 思路改编为 Python 运行时：
+
+- `insightagent/runtime/types.py`：定义 `ToolSpec`、权限、风险等级和结构化 `ToolExecutionResult`
+- `insightagent/runtime/permissions.py`：在工具执行前统一做权限裁决
+- `insightagent/runtime/command_validation.py`：识别 shell 命令意图，例如 test、build、install、network、mutating、destructive
+- `insightagent/runtime/failure_classifier.py`：把失败归类为 code/test/environment/network/permission/timeout 等类型
+- `ToolRegistry.execute()`：模型工具调用统一经过 spec、permission、command validation、failure classification 和重复失败熔断
+- `JsonlTraceRecorder`：可把每次运行的结构化事件写成 JSONL，供后续统计轨迹成功率和失败类型
+
+非重试型失败，例如网络不可达、环境缺失、权限拒绝，会被标记为不可重复重试；同一个失败工具调用再次出现时，runtime 会直接抑制重复调用并把原因写入 trace。
 
 ## 配置
 
@@ -123,7 +136,7 @@ MCP 配置单独存放。非交互式 `run_task` 和交互式 `cli` 都会记录
 <workspace>/mcp_config.json
 ```
 
-这样从项目根目录启动、但把 `--workspace` 指到 `demo_mcp` 这类演示目录时，也能自动加载项目根目录的 `mcp_config.json`，不需要再把配置复制到 workspace 里。
+这样从项目根目录启动、但把 `--workspace` 指到 `workspaces/<task>` 这类临时工作区时，也能加载项目根目录的 `mcp_config.json`，不需要再把配置复制到每个 workspace 里。读取配置不等于启动 MCP server；默认 `--tool-profile coding-basic` 只暴露核心内置工具。
 
 示例见 [mcp_config.json.example](mcp_config.json.example)。
 
@@ -142,6 +155,18 @@ MCP 配置单独存放。非交互式 `run_task` 和交互式 `cli` 都会记录
 ```
 
 MCP tool 会按 `<prefix>_<tool>` 暴露给模型，例如 `mcp_playwright_navigate`。MCP resources 和 prompts 会通过 `<prefix>_list_resources`、`<prefix>_read_resource`、`<prefix>_list_prompts`、`<prefix>_get_prompt` 暴露。
+
+需要 MCP 时显式选择：
+
+```bash
+python3 -m insightagent.run_task \
+  --tool-profile mcp-playwright \
+  --trace-jsonl reports/mcp_tools_trace.jsonl \
+  --workspace workspaces/mcp_tools \
+  --task "使用 Playwright MCP 打开 https://example.com 并总结页面标题。"
+```
+
+也可以用 `--enable-mcp-server github` 或 `--enable-mcp-server all` 只对本次运行启用指定配置。`--allowed-tools read_file,grep_search` 可在当前 profile 内进一步收窄内置工具集合。
 
 详细说明见 [MCP_GUIDE.md](MCP_GUIDE.md)。
 
@@ -187,9 +212,9 @@ python3 -m insightagent.run_task \
   --provider siliconflow \
   --model "Qwen/Qwen2.5-72B-Instruct" \
   --timeout 300 \
-  --workspace demo_v5 \
+  --workspace workspaces/card_war \
   --permission-mode workspace-write \
-  --export-transcript demo_v5/transcript.md \
+  --export-transcript workspaces/card_war/transcript.md \
   --task "请创建一个 Python 纸牌游戏 card_war.py。先给 plan，写文件，运行 python3 -m py_compile card_war.py 和 python3 card_war.py。如果出现错误，请自动修复并重新验证。最后总结。"
 ```
 
@@ -205,14 +230,14 @@ config_files=...
 列出 sessions：
 
 ```bash
-python3 -m insightagent.run_task --workspace demo_v5 --list-sessions
+python3 -m insightagent.run_task --workspace workspaces/card_war --list-sessions
 ```
 
 恢复 session：
 
 ```bash
 python3 -m insightagent.run_task \
-  --workspace demo_v5 \
+  --workspace workspaces/card_war \
   --session-id <session_id> \
   --task "继续上一个任务，检查当前文件并总结状态。"
 ```
@@ -223,7 +248,7 @@ python3 -m insightagent.run_task \
 python3 -m insightagent.cli \
   --provider siliconflow \
   --model "Qwen/Qwen2.5-72B-Instruct" \
-  --workspace demo_v5
+  --workspace workspaces/card_war
 ```
 
 Slash commands：

@@ -8,13 +8,13 @@ from typing import Any, Callable
 
 from .context import ContextManager
 from .memory import SlidingWindowMemory
-from .messages import Message
-from .providers import ModelClient, ToolArgumentsParseError
-from .resilience import ToolCallExtractor, build_repair_prompt
+from ..api.messages import Message
+from ..api.providers import ModelClient, ToolArgumentsParseError
+from ..api.resilience import ToolCallExtractor, build_repair_prompt
 from .session import Session, SessionStore
 from .task_state import TaskPhase, TaskState, mark_final_answer, phase_instruction, transition_after_tool
-from .tools import ToolRegistry
-from .usage import UsageTracker
+from ..tools import ToolRegistry
+from ..telemetry.usage import UsageTracker
 
 
 DEFAULT_SYSTEM_PROMPT = """You are InsightAgent V5.0, a coding agent runtime with sessions, usage tracking, grep search, and self-healing repair loops.

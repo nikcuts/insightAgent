@@ -67,6 +67,34 @@ class ConfigTests(unittest.TestCase):
                     else:
                         os.environ[name] = value
 
+    def test_load_dotenv_files_searches_start_dir_parents(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repo"
+            start_dir = repo / "nested" / "commands"
+            workspace = repo / "workspaces" / "generated"
+            start_dir.mkdir(parents=True)
+            workspace.mkdir(parents=True)
+            (repo / ".env").write_text(
+                "SILICONFLOW_API_KEY=repo-key\nexport SILICONFLOW_MODEL=repo-model\n",
+                encoding="utf-8",
+            )
+            old_values = {name: os.environ.get(name) for name in ["SILICONFLOW_API_KEY", "SILICONFLOW_MODEL"]}
+            for name in old_values:
+                os.environ.pop(name, None)
+            try:
+                loaded = load_dotenv_files(workspace, start_dir=start_dir)
+
+                self.assertEqual(os.environ["SILICONFLOW_API_KEY"], "repo-key")
+                self.assertEqual(os.environ["SILICONFLOW_MODEL"], "repo-model")
+                self.assertEqual(loaded, (str(repo / ".env"),))
+            finally:
+                for name, value in old_values.items():
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
+
 
 if __name__ == "__main__":
     unittest.main()

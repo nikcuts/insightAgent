@@ -7,15 +7,15 @@ import os
 import sys
 from pathlib import Path
 
-from .agent import CodeAgent
-from .config import RuntimeConfig, load_dotenv_files, load_runtime_config
-from .context import ContextManager, ProjectMemory, build_system_prompt, load_project_memory
-from .mcp.config import load_mcp_config
-from .mcp.manager import MCPManager
-from .providers import AnthropicClient, ModelClient, OpenAICompatibleClient, ProviderError
-from .session import Session, SessionStore
+from ..agent.core import CodeAgent
+from ..config import RuntimeConfig, load_dotenv_files, load_runtime_config
+from ..agent.context import ContextManager, ProjectMemory, build_system_prompt, load_project_memory
+from ..mcp.config import load_mcp_config
+from ..mcp.manager import MCPManager
+from ..api.providers import AnthropicClient, ModelClient, OpenAICompatibleClient, ProviderError
+from ..agent.session import Session, SessionStore
 from .smoke import SILICONFLOW_BASE_URL, SILICONFLOW_DEFAULT_MODEL
-from .tool_context import ToolContext
+from ..runtime.tool_context import ToolContext
 from .tool_profiles import (
     TOOL_PROFILE_CHOICES,
     filter_tools,
@@ -23,8 +23,8 @@ from .tool_profiles import (
     resolve_mcp_server_names,
     select_mcp_config,
 )
-from .tools import ToolRegistry, default_tools
-from .trace import CompositeTracer, ConsoleTracer, JsonlTraceRecorder
+from ..tools import ToolRegistry, default_tools
+from ..telemetry.trace import CompositeTracer, ConsoleTracer, JsonlTraceRecorder
 
 
 DEFAULT_TASK = """在工作区中创建一个 Python 文件 hello_agent.py。

@@ -1,8 +1,0 @@
-- generic [ref=e2] [box=0,0,1280,720]:
-  - generic [ref=e3] [box=0,0,1280,810]:
-    - generic [box=0,0,1280,0]
-    - generic [ref=e24] [box=240,0,800,384]
-    - generic [ref=e118] [box=52,721,1176,39]
-  - generic [ref=e137] [box=1212,588,44,88]:
-    - generic [box=1212,588,44,0]
-    - img [ref=e142] [cursor=pointer] [box=1222,642,24,24]
