@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from insightagent.agent.core import CodeAgent
-from insightagent.agent.task_state import TaskPhase
+from insightagent.agent.task_state import TaskPhase, TaskState
 from insightagent.api.messages import Message, ModelResponse, ToolCall
 from insightagent.api.providers import ModelClient, ToolArgumentsParseError
 from insightagent.runtime.tool_context import ToolContext
@@ -233,6 +233,41 @@ class AgentLoopTests(unittest.TestCase):
                     for message in second_call_messages
                 )
             )
+
+    def test_failed_phase_stops_without_accepting_next_model_text(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeModelClient(
+                [
+                    ModelResponse(
+                        tool_calls=[
+                            ToolCall(
+                                id="call_1",
+                                name="execute_command",
+                                arguments={
+                                    "command": "python -c \"raise SystemExit(1)\"",
+                                    "cwd": str(directory),
+                                },
+                            )
+                        ]
+                    ),
+                    ModelResponse(content="Next I will keep trying."),
+                ]
+            )
+            agent = CodeAgent(
+                client,
+                tools=ToolRegistry(context=ToolContext(workspace=Path(directory))),
+                task_state=TaskState(max_repairs=1),
+                max_tool_iterations=5,
+            )
+            events: list[dict[str, Any]] = []
+
+            result = agent.run_turn_with_trace("Run the failing command", trace=events.append)
+
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(agent.task_state.phase, TaskPhase.FAILED)
+        self.assertIn("repair limit", result.content)
+        self.assertNotIn("Next I will keep trying", result.content)
+        self.assertTrue(any(event["type"] == "task_failed" for event in events))
 
     def test_require_tool_use_reprompts_when_model_only_describes_tools(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

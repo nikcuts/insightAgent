@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import time
@@ -153,6 +154,11 @@ class OpenAICompatibleClient:
                 raise ProviderError(f"OpenAI-compatible provider error {error.code}: {detail}") from error
             except urllib.error.URLError as error:
                 raise ProviderError(f"OpenAI-compatible provider connection error: {error.reason}") from error
+            except http.client.RemoteDisconnected as error:
+                if attempt < self.max_retries:
+                    self.sleep(self.retry_base_delay * (2**attempt))
+                    continue
+                raise ProviderError(f"OpenAI-compatible provider connection error: {error}") from error
         raise ProviderError("OpenAI-compatible provider request failed after retries")
 
     def _message_to_openai(self, message: Message) -> dict[str, Any]:

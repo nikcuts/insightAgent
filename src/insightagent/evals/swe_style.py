@@ -178,21 +178,6 @@ def run_case(
     trace_path.parent.mkdir(parents=True, exist_ok=True)
 
     baseline = run_command(case.test_command, cwd=workspace, timeout_seconds=test_timeout)
-    if dry_run:
-        changes = analyze_workspace_changes(case.source_dir, workspace)
-        return CaseRunResult(
-            id=case.id,
-            status="dry_run",
-            resolved=False,
-            failure_mode="not_run",
-            workspace=str(workspace),
-            trace_jsonl=str(trace_path),
-            changes=changes,
-            baseline=baseline,
-            agent=None,
-            verification=None,
-        )
-
     invalid_baseline_status = classify_invalid_baseline(baseline)
     if invalid_baseline_status is not None:
         changes = analyze_workspace_changes(case.source_dir, workspace)
@@ -201,6 +186,21 @@ def run_case(
             status=invalid_baseline_status,
             resolved=False,
             failure_mode=invalid_baseline_status,
+            workspace=str(workspace),
+            trace_jsonl=str(trace_path),
+            changes=changes,
+            baseline=baseline,
+            agent=None,
+            verification=None,
+        )
+
+    if dry_run:
+        changes = analyze_workspace_changes(case.source_dir, workspace)
+        return CaseRunResult(
+            id=case.id,
+            status="dry_run",
+            resolved=False,
+            failure_mode="not_run",
             workspace=str(workspace),
             trace_jsonl=str(trace_path),
             changes=changes,
@@ -442,6 +442,7 @@ def _looks_like_pytest_collection_or_import_error(output: str) -> bool:
         "ImportError while loading conftest",
         "ERROR collecting",
         "ConftestImportFailure",
+        "ModuleNotFoundError",
         "pytest_cmdline_parse",
         "no tests ran",
     )
@@ -579,12 +580,13 @@ def render_summary(results: list[CaseRunResult]) -> str:
         f"- Resolution rate: {resolution_rate:.1f}%",
         f"- Raw resolution rate: {raw_rate:.1f}%",
         "",
-        "| Case | Status | Failure Mode | Baseline | Agent | Verification | Source Changes | Test Changes | Added Files | Workspace |",
-        "| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- |",
+        "| Case | Status | Failure Mode | Baseline | Agent | Verification | Source Changes | Test Changes | Added Files | Trace | Patch + | Patch - | Workspace |",
+        "| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- | ---: | ---: | --- |",
     ]
     for result in results:
         agent_code = "" if result.agent is None else str(result.agent.exit_code)
         verification_code = "" if result.verification is None else str(result.verification.exit_code)
+        added_lines, deleted_lines = _count_patch_delta(result.changes.patch)
         lines.append(
             "| "
             f"{result.id} | {result.status} | {result.failure_mode} | {result.baseline.exit_code} | "
@@ -592,6 +594,8 @@ def render_summary(results: list[CaseRunResult]) -> str:
             f"{_format_files(result.changes.source_files_changed)} | "
             f"{_format_files(result.changes.test_files_changed)} | "
             f"{_format_files(result.changes.added_files)} | "
+            f"`{result.trace_jsonl}` | "
+            f"{added_lines} | {deleted_lines} | "
             f"`{result.workspace}` |"
         )
     lines.append("")
@@ -797,6 +801,19 @@ def _is_test_file(relative_path: str) -> bool:
 
 def _format_files(files: list[str]) -> str:
     return ", ".join(f"`{path}`" for path in files) if files else ""
+
+
+def _count_patch_delta(patch: str) -> tuple[int, int]:
+    added = 0
+    deleted = 0
+    for line in patch.splitlines():
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        if line.startswith("+"):
+            added += 1
+        elif line.startswith("-"):
+            deleted += 1
+    return added, deleted
 
 
 def _read_patch_lines(path: Path) -> list[str]:

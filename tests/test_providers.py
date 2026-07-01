@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 from io import BytesIO
 import json
 import unittest
@@ -99,6 +100,41 @@ class ProviderConversionTests(unittest.TestCase):
         response = client.complete([Message(role="user", content="hello")], [])
 
         self.assertEqual(response.content, "ok")
+        self.assertEqual(calls, 2)
+        self.assertEqual(slept, [0.0])
+
+    def test_openai_compatible_retries_remote_disconnected_once(self) -> None:
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+                return None
+
+            def read(self) -> bytes:
+                return b'{"choices": [{"message": {"content": "ok after reconnect"}}]}'
+
+        calls = 0
+        slept: list[float] = []
+
+        def fake_urlopen(request, timeout):  # noqa: ANN001
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise http.client.RemoteDisconnected("Remote end closed connection without response")
+            return FakeResponse()
+
+        client = OpenAICompatibleClient(
+            api_key="test-key",
+            max_retries=1,
+            retry_base_delay=0.0,
+            sleep=slept.append,
+            urlopen=fake_urlopen,
+        )
+
+        response = client.complete([Message(role="user", content="hello")], [])
+
+        self.assertEqual(response.content, "ok after reconnect")
         self.assertEqual(calls, 2)
         self.assertEqual(slept, [0.0])
 

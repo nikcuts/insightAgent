@@ -302,6 +302,8 @@ class CodeAgent:
         for iteration in range(1, self.max_tool_iterations + 1):
             if deadline is not None and time.monotonic() >= deadline:
                 return self._finalize_time_budget_exceeded(iteration, trace)
+            if self.task_state.phase == TaskPhase.FAILED:
+                return self._finalize_task_failed(iteration, trace)
             self.messages = self.memory.trim(self.messages)
             request_messages = self.messages + [Message(role="user", content=phase_instruction(self.task_state))]
             self._emit(
@@ -669,6 +671,35 @@ class CodeAgent:
                 "type": "time_budget_exceeded",
                 "iteration": iteration,
                 "max_wall_seconds": budget,
+            },
+        )
+        self._emit(trace, {"type": "final_answer", "content": warning, "iterations": iteration})
+        self._sync_session()
+        return AgentResult(content=warning, messages=list(self.messages), iterations=iteration)
+
+    def _finalize_task_failed(self, iteration: int, trace: TraceHandler | None) -> AgentResult:
+        last_error = self.task_state.last_error or "no recorded error"
+        preview = last_error[:1500] + ("..." if len(last_error) > 1500 else "")
+        warning = (
+            "Stopped: task entered failed phase after reaching the repair limit. "
+            "Partial progress is preserved in the workspace.\n"
+            f"Last error:\n{preview}"
+        )
+        self.messages.append(Message(role="assistant", content=warning))
+        self.task_state.phase = TaskPhase.FAILED
+        self._sync_session()
+        compaction = self.context_manager.compact_after_completion(self.messages)
+        self.messages = compaction.messages
+        if compaction.compacted_count:
+            self._emit(trace, {"type": "context_compaction", "compacted_count": compaction.compacted_count})
+        self.messages = self.memory.trim(self.messages)
+        self._emit(
+            trace,
+            {
+                "type": "task_failed",
+                "iteration": iteration,
+                "repair_attempts": self.task_state.repair_attempts,
+                "max_repairs": self.task_state.max_repairs,
             },
         )
         self._emit(trace, {"type": "final_answer", "content": warning, "iterations": iteration})

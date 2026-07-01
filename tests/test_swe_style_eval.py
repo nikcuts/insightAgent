@@ -247,6 +247,32 @@ class SweStyleEvalTests(unittest.TestCase):
         self.assertIn("- Resolution rate: 100.0%", summary)
         self.assertIn("- Raw resolution rate: 50.0%", summary)
 
+    def test_summary_includes_trace_path_and_patch_size(self) -> None:
+        result = _case_result(
+            "pallets__flask-5063",
+            "unresolved",
+            False,
+            baseline=1,
+            agent=0,
+            verification=1,
+            patch=(
+                "--- a/src/flask/cli.py\n"
+                "+++ b/src/flask/cli.py\n"
+                "@@ -1,2 +1,3 @@\n"
+                "-old\n"
+                "+new\n"
+                "+added\n"
+            ),
+        )
+
+        summary = render_summary([result])
+
+        self.assertIn("Trace", summary)
+        self.assertIn("Patch +", summary)
+        self.assertIn("Patch -", summary)
+        self.assertIn("`reports/swe_style/pallets__flask-5063.trace.jsonl`", summary)
+        self.assertIn("| 2 | 1 |", summary)
+
     def test_invalid_pytest_collection_baseline_does_not_call_agent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -281,6 +307,43 @@ class SweStyleEvalTests(unittest.TestCase):
         self.assertEqual(result.status, "invalid_environment")
         self.assertEqual(result.failure_mode, "invalid_environment")
         self.assertEqual(result.baseline.exit_code, 4)
+        self.assertIsNone(result.agent)
+        self.assertIsNone(result.verification)
+
+    def test_dry_run_classifies_import_error_baseline_as_invalid_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "fail_env.py").write_text(
+                "import sys\n"
+                "sys.stderr.write(\"ModuleNotFoundError: No module named '_pytest._version'\\n\")\n"
+                "raise SystemExit(1)\n",
+                encoding="utf-8",
+            )
+            case = SweStyleCase(
+                id="pytest-dev__pytest-11143",
+                source_dir=source,
+                issue="Rewrite fails when first expression of file is a number.",
+                test_command="python fail_env.py",
+                metadata={"repo": "pytest-dev/pytest"},
+            )
+
+            result = run_case(
+                case,
+                run_root=root / "runs",
+                report_root=root / "reports",
+                project_root=ROOT,
+                provider="provider-should-not-be-called",
+                model="Qwen/Qwen2.5-72B-Instruct",
+                run_id="unit-dry-invalid-env",
+                dry_run=True,
+                max_wall_seconds=1,
+            )
+
+        self.assertEqual(result.status, "invalid_environment")
+        self.assertEqual(result.failure_mode, "invalid_environment")
+        self.assertEqual(result.baseline.exit_code, 1)
         self.assertIsNone(result.agent)
         self.assertIsNone(result.verification)
 
@@ -363,6 +426,7 @@ def _case_result(
     baseline: int,
     agent: int | None = None,
     verification: int | None = None,
+    patch: str = "",
 ) -> CaseRunResult:
     changes = WorkspaceChanges(
         modified_files=[],
@@ -370,7 +434,7 @@ def _case_result(
         deleted_files=[],
         test_files_changed=[],
         source_files_changed=[],
-        patch="",
+        patch=patch,
     )
     return CaseRunResult(
         id=case_id,
