@@ -1,0 +1,170 @@
+[
+  {
+    "id": "01_fastapi_summary",
+    "category": "web-summary",
+    "profile": "mcp-playwright",
+    "permission": "workspace-write",
+    "max_iters": 16,
+    "max_wall": 360,
+    "turns": [
+      {"prompt": "打开网页 https://fastapi.tiangolo.com/tutorial/first-steps/ ，阅读后用中文总结：启动一个最小 FastAPI 应用需要哪些步骤（至少覆盖导入 FastAPI、创建实例、定义路由、用 uvicorn 运行）。"}
+    ],
+    "eval": "是否真的打开了页面并总结到导入/创建实例/路由/运行四要素，无明显幻觉"
+  },
+  {
+    "id": "02_ruff_vs_flake8",
+    "category": "web-search-preference",
+    "profile": "mcp-playwright",
+    "permission": "workspace-write",
+    "max_iters": 18,
+    "max_wall": 420,
+    "turns": [
+      {"prompt": "用浏览器搜索 ruff 与 flake8 的对比，打开相关页面了解二者差异，然后用中文给出：在一个全新的 Python 项目里你更推荐哪个做 lint，并给出至少 3 条有依据的理由。"}
+    ],
+    "eval": "是否检索了真实页面、对比到位、给出有依据的推荐（偏好判断），无空泛结论"
+  },
+  {
+    "id": "03_hackernews_judge",
+    "category": "web-dynamic-judge",
+    "profile": "mcp-playwright",
+    "permission": "workspace-write",
+    "max_iters": 16,
+    "max_wall": 360,
+    "turns": [
+      {"prompt": "打开 https://news.ycombinator.com ，用中文总结当前首页前 5 条的标题主题，并判断其中哪一条最值得软件工程师关注，给出理由。"}
+    ],
+    "eval": "是否抓取到真实首页条目、总结准确、判断有理由"
+  },
+  {
+    "id": "04_github_fastapi_health",
+    "category": "github-intel",
+    "profile": "mcp-github",
+    "permission": "workspace-write",
+    "max_iters": 16,
+    "max_wall": 360,
+    "turns": [
+      {"prompt": "用 GitHub 工具查看 tiangolo/fastapi 仓库，总结它的活跃度信号（如 star 量、最近一次 release 或最近提交时间），并用中文判断它是否值得作为生产依赖，给出理由。"}
+    ],
+    "eval": "是否真的用 GitHub 工具取到数据、判断有依据"
+  },
+  {
+    "id": "05_kvstore_longtraj",
+    "category": "long-trajectory",
+    "profile": "coding-basic",
+    "permission": "workspace-write",
+    "max_iters": 18,
+    "max_wall": 300,
+    "protect": ["test_*.py"],
+    "seed": {
+      "test_store.py": "import os\nimport tempfile\nimport unittest\n\nfrom kvstore.store import KVStore\n\n\nclass KVStoreTests(unittest.TestCase):\n    def setUp(self):\n        handle = tempfile.NamedTemporaryFile(suffix=\".json\", delete=False)\n        handle.close()\n        self.path = handle.name\n\n    def tearDown(self):\n        if os.path.exists(self.path):\n            os.unlink(self.path)\n\n    def test_set_get(self):\n        store = KVStore(self.path)\n        store.set(\"a\", \"1\")\n        self.assertEqual(store.get(\"a\"), \"1\")\n\n    def test_missing_key_returns_none(self):\n        self.assertIsNone(KVStore(self.path).get(\"nope\"))\n\n    def test_delete(self):\n        store = KVStore(self.path)\n        store.set(\"a\", \"1\")\n        store.delete(\"a\")\n        self.assertIsNone(store.get(\"a\"))\n\n    def test_empty_list_keys(self):\n        self.assertEqual(KVStore(self.path).list_keys(), [])\n\n    def test_persistence_across_instances(self):\n        KVStore(self.path).set(\"x\", \"9\")\n        self.assertEqual(KVStore(self.path).get(\"x\"), \"9\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+    },
+    "turns": [
+      {"prompt": "已存在只读的 test_store.py（你不能修改它）。请实现 kvstore/__init__.py 和 kvstore/store.py 使其通过该测试：KVStore(path) 构造接收一个 json 文件路径，支持 set(k,v)/get(k)/delete(k)/list_keys()，数据持久化到该路径，缺失键 get 返回 None。只能改实现代码，不能改测试。调用 run_verification 直到通过，最后中文总结。"}
+    ],
+    "eval": "实现通过只读测试、持久化真实、未改测试"
+  },
+  {
+    "id": "06_navigate_run_verification",
+    "category": "codebase-navigation",
+    "profile": "coding-basic",
+    "permission": "read-only",
+    "copy_src": true,
+    "max_iters": 14,
+    "max_wall": 300,
+    "turns": [
+      {"prompt": "这是 InsightAgent 的源码副本。先用 repo_map 了解 src/insightagent/tools 的结构，再用 find_symbol 或 grep_search 定位 run_verification 工具的实现，读懂后用中文解释它自动探测验证命令的优先级顺序（npm/pytest/py_compile），并指出一个潜在的改进点。不要修改任何代码。", "allow_no_tool": false}
+    ],
+    "eval": "是否真的用 repo_map/find_symbol 导航并读到 execution_tools.py，解释的优先级是否正确，改进点是否合理"
+  },
+  {
+    "id": "07_refactor_god_function",
+    "category": "refactor",
+    "profile": "coding-basic",
+    "permission": "workspace-write",
+    "max_iters": 16,
+    "max_wall": 300,
+    "protect": ["test_*.py"],
+    "seed": {
+      "report.py": "def build_report(numbers):\n    data = [int(x) for x in numbers]\n    total = 0\n    for d in data:\n        total += d\n    avg = total / len(data) if data else 0\n    return f\"count={len(data)} total={total} avg={avg}\"\n",
+      "test_report.py": "import unittest\n\nfrom report import build_report\n\n\nclass ReportTests(unittest.TestCase):\n    def test_basic(self):\n        self.assertEqual(build_report([\"1\", \"2\", \"3\"]), \"count=3 total=6 avg=2.0\")\n\n    def test_empty(self):\n        self.assertEqual(build_report([]), \"count=0 total=0 avg=0\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+    },
+    "turns": [
+      {"prompt": "report.py 里的 build_report 把读取(解析)、处理(求和求均值)、格式化三件事混在一个函数里。请在保持 test_report.py 全部通过的前提下，把它重构为三个单一职责的函数（如 parse_numbers / compute_stats / format_report），build_report 只负责编排调用它们。改完调用 run_verification 确认测试仍通过，最后中文说明你的拆分。"}
+    ],
+    "eval": "是否真的拆成多个函数、测试仍过、行为不变"
+  },
+  {
+    "id": "08_leapyear_logicbug",
+    "category": "logic-fix",
+    "profile": "coding-basic",
+    "permission": "workspace-write",
+    "max_iters": 14,
+    "max_wall": 240,
+    "protect": ["test_*.py"],
+    "seed": {
+      "leap.py": "def is_leap(year):\n    return year % 4 == 0\n",
+      "test_leap.py": "import unittest\n\nfrom leap import is_leap\n\n\nclass LeapTests(unittest.TestCase):\n    def test_div400(self):\n        self.assertTrue(is_leap(2000))\n\n    def test_div100_not400(self):\n        self.assertFalse(is_leap(1900))\n        self.assertFalse(is_leap(2100))\n\n    def test_div4(self):\n        self.assertTrue(is_leap(2004))\n\n    def test_common(self):\n        self.assertFalse(is_leap(2023))\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+    },
+    "turns": [
+      {"prompt": "leap.py 里的 is_leap(year) 有逻辑错误（没有正确处理能被 100 整除但不能被 400 整除的年份）。test_leap.py 会失败。请先调用 run_verification 复现失败，定位并修复 is_leap，直到全部测试通过，最后中文说明 bug 与修复。"}
+    ],
+    "eval": "是否正确实现 (year%4==0 and year%100!=0) or year%400==0，测试通过"
+  },
+  {
+    "id": "09_stats_robustness",
+    "category": "robustness",
+    "profile": "coding-basic",
+    "permission": "workspace-write",
+    "max_iters": 16,
+    "max_wall": 300,
+    "protect": ["test_*.py"],
+    "seed": {
+      "stats.py": "def mean(values):\n    return sum(values) / len(values)\n\n\ndef median(values):\n    s = sorted(values)\n    return s[len(s) // 2]\n",
+      "test_stats.py": "import unittest\n\nfrom stats import mean, median\n\n\nclass StatsTests(unittest.TestCase):\n    def test_empty_mean_none(self):\n        self.assertIsNone(mean([]))\n\n    def test_empty_median_none(self):\n        self.assertIsNone(median([]))\n\n    def test_single(self):\n        self.assertEqual(mean([5]), 5)\n        self.assertEqual(median([5]), 5)\n\n    def test_mean_multi(self):\n        self.assertEqual(mean([1, 2, 3, 4]), 2.5)\n\n    def test_median_odd(self):\n        self.assertEqual(median([3, 1, 2]), 2)\n\n    def test_median_even(self):\n        self.assertEqual(median([1, 2, 3, 4]), 2.5)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+    },
+    "turns": [
+      {"prompt": "已存在只读的 test_stats.py（你不能修改它）。请只修改 stats.py 使其通过：mean 与 median 在空列表时返回 None；median 在偶数个元素时返回中间两个数的平均值。只能改实现，不能改测试。调用 run_verification 直到通过，最后中文总结。"}
+    ],
+    "eval": "实现通过只读测试、空返回 None、偶数 median 取平均、未改测试"
+  },
+  {
+    "id": "10_multiturn_taskman",
+    "category": "multi-turn",
+    "profile": "coding-basic",
+    "permission": "workspace-write",
+    "max_iters": 16,
+    "max_wall": 300,
+    "turns": [
+      {"prompt": "实现一个任务管理库 taskman/__init__.py 和 taskman/store.py：TaskStore 类，支持 add(title)->id、list()->list[dict]、complete(id)。写 tests/test_store.py 覆盖。调用 run_verification 通过，中文总结。"},
+      {"prompt": "在上一步的基础上，给 TaskStore 增加按优先级排序：add 增加可选参数 priority(默认0)，新增 list_by_priority() 返回按 priority 降序的任务列表。更新测试并 run_verification 通过。"},
+      {"prompt": "现在需求变更：再支持标签。add 增加可选 tags(list 默认空)，新增 filter_by_tag(tag) 返回包含该标签的任务。更新测试并 run_verification 通过，最后中文总结整个演进过程。"}
+    ],
+    "eval": "三轮是否在同一份代码上增量演进、未推翻前序、每轮测试通过"
+  },
+  {
+    "id": "11_plan_then_exec",
+    "category": "plan-then-exec",
+    "profile": "coding-basic",
+    "permission": "workspace-write",
+    "max_iters": 16,
+    "max_wall": 300,
+    "turns": [
+      {"prompt": "我想要一个简单的命令行单位换算器（长度：米/厘米/英尺/英寸互转）。这一轮只给出实现方案和文件结构，不要写任何代码文件，也不要调用写文件/执行工具。", "allow_no_tool": true},
+      {"prompt": "现在请严格按你上一轮给出的方案，实现这个单位换算器（含核心换算函数），并写 unittest 覆盖核心换算，调用 run_verification 通过，最后中文总结你是否完全遵循了上一轮方案。"}
+    ],
+    "eval": "T2 是否与 T1 方案一致、最终实现可用且测试通过"
+  },
+  {
+    "id": "12_research_failure_handling",
+    "category": "codebase-research",
+    "profile": "coding-basic",
+    "permission": "read-only",
+    "copy_src": true,
+    "max_iters": 16,
+    "max_wall": 360,
+    "turns": [
+      {"prompt": "这是 InsightAgent 源码副本。请调研‘失败是如何被分类与处理的’：用 grep_search / repo_map / read_file 阅读 src/insightagent/runtime/failure_classifier.py 以及 src/insightagent/agent/core.py 中 repair 相关逻辑，用中文总结当前的失败分类与自愈机制，并提出 2 条有依据的改进建议。不要修改任何代码。", "allow_no_tool": false}
+    ],
+    "eval": "是否真的读到 failure_classifier 与 core 的 repair 逻辑、总结准确、建议有依据"
+  }
+]

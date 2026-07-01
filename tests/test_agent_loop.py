@@ -270,6 +270,35 @@ class AgentLoopTests(unittest.TestCase):
                 )
             )
 
+    def test_converges_after_repeated_verification_success(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeModelClient(
+                [
+                    ModelResponse(
+                        tool_calls=[ToolCall(id="w1", name="write_file", arguments={"path": "main.py", "content": "print(1)\n"})]
+                    ),
+                    ModelResponse(tool_calls=[ToolCall(id="v1", name="run_verification", arguments={})]),
+                    # Needless churn: rewrite the same file after it already passed.
+                    ModelResponse(
+                        tool_calls=[ToolCall(id="w2", name="write_file", arguments={"path": "main.py", "content": "print(1)\n"})]
+                    ),
+                    ModelResponse(tool_calls=[ToolCall(id="v2", name="run_verification", arguments={})]),
+                    # If convergence works, this tool-free response finalizes the turn.
+                    ModelResponse(content="done"),
+                ]
+            )
+            agent = CodeAgent(
+                client,
+                tools=ToolRegistry(context=ToolContext(workspace=Path(directory))),
+                require_tool_use=True,
+            )
+            events: list[dict[str, Any]] = []
+
+            result = agent.run_turn_with_trace("Create and verify", trace=events.append)
+
+            self.assertEqual(result.content, "done")
+            self.assertTrue(any(event["type"] == "verification_converged" for event in events))
+
     def test_malformed_tool_arguments_enter_repair_loop(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             client = BadArgumentsThenSuccessClient()

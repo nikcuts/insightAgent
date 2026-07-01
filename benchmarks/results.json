@@ -1,0 +1,238 @@
+[
+  {
+    "id": "01_fastapi_summary",
+    "category": "web-summary",
+    "turns": 1,
+    "outcome": "failed",
+    "executed_tools": true,
+    "verify_passed": false,
+    "model_calls": [
+      6
+    ],
+    "tool_calls_final": {
+      "write_file": 1,
+      "read_file": 1
+    },
+    "repairs_final": 0,
+    "total_tokens_final": 9472,
+    "cost_usd_final": 0.003789,
+    "eval_note": "是否真的打开了页面并总结到导入/创建实例/路由/运行四要素，无明显幻觉"
+  },
+  {
+    "id": "02_ruff_vs_flake8",
+    "category": "web-search-preference",
+    "turns": 1,
+    "outcome": "failed",
+    "executed_tools": true,
+    "verify_passed": false,
+    "model_calls": [
+      6
+    ],
+    "tool_calls_final": {
+      "execute_command": 4
+    },
+    "repairs_final": 3,
+    "total_tokens_final": 21179,
+    "cost_usd_final": 0.008472,
+    "eval_note": "是否检索了真实页面、对比到位、给出有依据的推荐（偏好判断），无空泛结论"
+  },
+  {
+    "id": "03_hackernews_judge",
+    "category": "web-dynamic-judge",
+    "turns": 1,
+    "outcome": "done",
+    "executed_tools": true,
+    "verify_passed": false,
+    "model_calls": [
+      3
+    ],
+    "tool_calls_final": {
+      "execute_command": 2
+    },
+    "repairs_final": 0,
+    "total_tokens_final": 7336,
+    "cost_usd_final": 0.002934,
+    "eval_note": "是否抓取到真实首页条目、总结准确、判断有理由"
+  },
+  {
+    "id": "04_github_fastapi_health",
+    "category": "github-intel",
+    "turns": 1,
+    "outcome": "done",
+    "executed_tools": true,
+    "verify_passed": false,
+    "model_calls": [
+      2
+    ],
+    "tool_calls_final": {
+      "mcp_github_get_latest_release": 1,
+      "mcp_github_list_releases": 1,
+      "mcp_github_list_commits": 1,
+      "mcp_github_list_issues": 1
+    },
+    "repairs_final": 0,
+    "total_tokens_final": 37389,
+    "cost_usd_final": 0.014956,
+    "eval_note": "是否真的用 GitHub 工具取到数据、判断有依据"
+  },
+  {
+    "id": "05_kvstore_longtraj",
+    "category": "long-trajectory",
+    "turns": 1,
+    "outcome": "failed",
+    "executed_tools": true,
+    "verify_passed": false,
+    "model_calls": [
+      9
+    ],
+    "tool_calls_final": {
+      "write_file": 2,
+      "run_verification": 3,
+      "edit_file": 2
+    },
+    "repairs_final": 3,
+    "total_tokens_final": 51847,
+    "cost_usd_final": 0.020739,
+    "eval_note": "实现通过只读测试、持久化真实、未改测试"
+  },
+  {
+    "id": "06_navigate_run_verification",
+    "category": "codebase-navigation",
+    "turns": 1,
+    "outcome": "done",
+    "executed_tools": true,
+    "verify_passed": false,
+    "model_calls": [
+      4
+    ],
+    "tool_calls_final": {
+      "repo_map": 1,
+      "find_symbol": 1,
+      "read_file": 1
+    },
+    "repairs_final": 0,
+    "total_tokens_final": 19535,
+    "cost_usd_final": 0.007814,
+    "eval_note": "是否真的用 repo_map/find_symbol 导航并读到 execution_tools.py，解释的优先级是否正确，改进点是否合理"
+  },
+  {
+    "id": "07_refactor_god_function",
+    "category": "refactor",
+    "turns": 1,
+    "outcome": "done",
+    "executed_tools": true,
+    "verify_passed": false,
+    "model_calls": [
+      2
+    ],
+    "tool_calls_final": {
+      "read_file": 1
+    },
+    "repairs_final": 0,
+    "total_tokens_final": 5804,
+    "cost_usd_final": 0.002322,
+    "eval_note": "是否真的拆成多个函数、测试仍过、行为不变"
+  },
+  {
+    "id": "08_leapyear_logicbug",
+    "category": "logic-fix",
+    "turns": 1,
+    "outcome": "error(exit=2)",
+    "executed_tools": true,
+    "verify_passed": true,
+    "model_calls": [
+      11
+    ],
+    "tool_calls_final": {
+      "run_verification": 4,
+      "grep_search": 1,
+      "read_file": 1,
+      "edit_file": 2,
+      "write_file": 1
+    },
+    "repairs_final": 2,
+    "total_tokens_final": 40846,
+    "cost_usd_final": 0.016338,
+    "eval_note": "是否正确实现 (year%4==0 and year%100!=0) or year%400==0，测试通过"
+  },
+  {
+    "id": "09_stats_robustness",
+    "category": "robustness",
+    "turns": 1,
+    "outcome": "error(exit=2)",
+    "executed_tools": false,
+    "verify_passed": false,
+    "model_calls": [
+      1
+    ],
+    "tool_calls_final": {},
+    "repairs_final": 0,
+    "total_tokens_final": 0,
+    "cost_usd_final": 0,
+    "eval_note": "实现通过只读测试、空返回 None、偶数 median 取平均、未改测试"
+  },
+  {
+    "id": "10_multiturn_taskman",
+    "category": "multi-turn",
+    "turns": 3,
+    "outcome": "failed",
+    "executed_tools": true,
+    "verify_passed": false,
+    "model_calls": [
+      1,
+      1,
+      10
+    ],
+    "tool_calls_final": {
+      "write_file": 1,
+      "run_verification": 1,
+      "execute_command": 1
+    },
+    "repairs_final": 2,
+    "total_tokens_final": 16822,
+    "cost_usd_final": 0.006729,
+    "eval_note": "三轮是否在同一份代码上增量演进、未推翻前序、每轮测试通过"
+  },
+  {
+    "id": "11_plan_then_exec",
+    "category": "plan-then-exec",
+    "turns": 2,
+    "outcome": "failed",
+    "executed_tools": true,
+    "verify_passed": false,
+    "model_calls": [
+      1,
+      8
+    ],
+    "tool_calls_final": {
+      "write_file": 3,
+      "run_verification": 3,
+      "edit_file": 3,
+      "read_file": 1
+    },
+    "repairs_final": 3,
+    "total_tokens_final": 59767,
+    "cost_usd_final": 0.023907,
+    "eval_note": "T2 是否与 T1 方案一致、最终实现可用且测试通过"
+  },
+  {
+    "id": "12_research_failure_handling",
+    "category": "codebase-research",
+    "turns": 1,
+    "outcome": "done",
+    "executed_tools": true,
+    "verify_passed": false,
+    "model_calls": [
+      5
+    ],
+    "tool_calls_final": {
+      "repo_map": 2,
+      "grep_search": 1,
+      "read_file": 4
+    },
+    "repairs_final": 0,
+    "total_tokens_final": 29028,
+    "cost_usd_final": 0.011611,
+    "eval_note": "是否真的读到 failure_classifier 与 core 的 repair 逻辑、总结准确、建议有依据"
+  }
+]

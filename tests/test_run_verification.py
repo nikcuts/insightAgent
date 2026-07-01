@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from insightagent.agent.task_state import TaskPhase, TaskState, transition_after_tool
 from insightagent.cli.tool_profiles import tool_names_for_profile
@@ -35,6 +36,36 @@ class DetectVerificationCommandTests(unittest.TestCase):
         self.assertEqual(strategy, "py_compile")
         self.assertIn("py_compile", command or "")
         self.assertIn("app.py", command or "")
+
+    def test_runs_tests_via_unittest_when_pytest_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "leap.py").write_text("def is_leap(y):\n    return y % 4 == 0\n", encoding="utf-8")
+            (root / "test_leap.py").write_text("import unittest\n", encoding="utf-8")
+
+            with mock.patch("insightagent.tools.execution_tools.importlib.util.find_spec", return_value=None):
+                strategy, command = detect_verification_command(root)
+
+        # Must run the tests (unittest), never silently fall back to syntax-only py_compile.
+        self.assertEqual(strategy, "unittest")
+        self.assertIn("unittest discover", command or "")
+
+    def test_real_test_failure_is_caught_not_rubber_stamped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "leap.py").write_text("def is_leap(y):\n    return y % 4 == 0\n", encoding="utf-8")
+            (root / "test_leap.py").write_text(
+                "import unittest\nfrom leap import is_leap\n\n"
+                "class T(unittest.TestCase):\n    def test(self):\n        self.assertFalse(is_leap(1900))\n",
+                encoding="utf-8",
+            )
+            registry = ToolRegistry(context=ToolContext(workspace=root))
+
+            with mock.patch("insightagent.tools.execution_tools.importlib.util.find_spec", return_value=None):
+                result = registry.execute("run_verification", {})
+
+        self.assertTrue(result.is_error)
+        self.assertNotIn("strategy: py_compile", result.content)
 
     def test_returns_none_when_nothing_detected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

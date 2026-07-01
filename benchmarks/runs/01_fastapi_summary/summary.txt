@@ -1,0 +1,7 @@
+启动一个最小 FastAPI 应用需要以下步骤：
+1. 导入 FastAPI：from fastapi import FastAPI
+2. 创建 FastAPI 实例：app = FastAPI()
+3. 定义路由：@app.get("/")
+def read_root():
+    return {"Hello": "World"}
+4. 用 uvicorn 运行应用：uvicorn main:app --reload
