@@ -74,7 +74,7 @@ class FailureClassifier:
         if not is_error and exception is None:
             return FailureClassification(FailureKind.NONE, retryable=False, repair_guidance="")
         if exception is not None:
-            return self.classify_exception(exception)
+            return self.classify_exception(exception, tool_name=tool_name)
         lowered = content.lower()
         if _matches(lowered, self.network_patterns):
             return FailureClassification(
@@ -94,11 +94,57 @@ class FailureClassifier:
                     "same command; inspect available files/tools or report the environment blocker."
                 ),
             )
+        if tool_name in {"execute_command", "run_verification"} and (
+            "replacement index" in lowered or "indexerror" in lowered
+        ):
+            return FailureClassification(
+                FailureKind.CODE_ERROR,
+                retryable=False,
+                repair_guidance=(
+                    "The verification failed inside the application with a format string IndexError. "
+                    "Inspect the relevant source lines around the format string, then make the number of "
+                    "placeholders, column widths, headers, and row arguments match."
+                ),
+            )
+        if tool_name in {"execute_command", "run_verification"} and "did not raise" in lowered:
+            return FailureClassification(
+                FailureKind.TEST_FAILURE,
+                retryable=False,
+                repair_guidance=(
+                    "A pytest.raises expectation did not raise at the displayed call site. Inspect the "
+                    "constructor or function invoked on that failing line and add validation there; do not "
+                    "patch a later registration path that is not executed by the failing call."
+                ),
+            )
+        if (
+            tool_name in {"execute_command", "run_verification"}
+            and "pytest.raises(valueerror)" in lowered
+            and "assertionerror" in lowered
+        ):
+            return FailureClassification(
+                FailureKind.TEST_FAILURE,
+                retryable=False,
+                repair_guidance=(
+                    "The failing path already detects the invalid input with an assert, but the test expects "
+                    "an explicit ValueError. Inspect the stack line containing the assert and replace that "
+                    "specific assertion with a ValueError raise while preserving surrounding behavior."
+                ),
+            )
         if _matches(lowered, self.test_patterns) and tool_name in {"execute_command", "run_verification"}:
             return FailureClassification(
                 FailureKind.TEST_FAILURE,
                 retryable=False,
                 repair_guidance="A verification command failed. Inspect the failure and edit the code before rerunning tests.",
+            )
+        if tool_name == "edit_file" and "old text not found" in lowered:
+            return FailureClassification(
+                FailureKind.CODE_ERROR,
+                retryable=False,
+                repair_guidance=(
+                    "The exact edit_file old text was not found. Do not reread a whole large file or retry the "
+                    "same snippet. Use grep_search for a unique symbol, method name, or nearby error text, then "
+                    "read the narrow file section and retry edit_file with enough unique surrounding context."
+                ),
             )
         if _matches(lowered, self.code_patterns):
             return FailureClassification(
@@ -112,7 +158,7 @@ class FailureClassifier:
             repair_guidance="The tool failed. Inspect the error before deciding whether another tool call is useful.",
         )
 
-    def classify_exception(self, exception: BaseException) -> FailureClassification:
+    def classify_exception(self, exception: BaseException, tool_name: str = "") -> FailureClassification:
         if isinstance(exception, PermissionDenied):
             return FailureClassification(
                 FailureKind.PERMISSION_DENIED,
@@ -131,7 +177,7 @@ class FailureClassifier:
                 retryable=False,
                 repair_guidance="The command timed out. Repeating unchanged is unlikely to help; narrow the command or inspect incrementally.",
             )
-        return self.classify("", f"{type(exception).__name__}: {exception}", is_error=True)
+        return self.classify(tool_name, f"{type(exception).__name__}: {exception}", is_error=True)
 
 
 def _matches(text: str, patterns: tuple[str, ...]) -> bool:

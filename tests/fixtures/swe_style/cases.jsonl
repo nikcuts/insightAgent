@@ -1,0 +1,2 @@
+{"id":"local_calc_addition","source_dir":"local_calc_addition","issue":"The calculator's calculate(left, operator, right) function returns the wrong result for addition. Fix the implementation so all existing unit tests pass without changing the tests.","test_command":"python -m unittest discover -s . -v"}
+

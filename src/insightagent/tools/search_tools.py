@@ -42,7 +42,10 @@ class GrepSearchTool:
         for path in sorted(self.context.workspace.rglob("*")):
             if len(results) >= max_results:
                 break
-            if not path.is_file() or not fnmatch.fnmatch(path.name, glob):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(self.context.workspace).as_posix()
+            if not _matches_grep_glob(path.name, rel, glob):
                 continue
             try:
                 data = path.read_bytes()
@@ -56,11 +59,30 @@ class GrepSearchTool:
                 continue
             for line_no, line in enumerate(text.splitlines(), start=1):
                 if pattern.search(line):
-                    rel = path.relative_to(self.context.workspace)
                     results.append(f"{rel}:{line_no}:{line}")
                     if len(results) >= max_results:
                         break
         return "\n".join(results) if results else "no matches"
+
+
+def _matches_grep_glob(file_name: str, relative_path: str, pattern: str) -> bool:
+    return any(
+        fnmatch.fnmatch(file_name, variant) or fnmatch.fnmatch(relative_path, variant)
+        for variant in _grep_glob_variants(pattern)
+    )
+
+
+def _grep_glob_variants(pattern: str) -> list[str]:
+    normalized = pattern.replace("\\", "/")
+    variants = [normalized]
+    if not normalized.startswith("**/"):
+        variants.append(f"**/{normalized}")
+    if "/**/" in normalized:
+        collapsed = normalized.replace("/**/", "/")
+        variants.append(collapsed)
+        if not collapsed.startswith("**/"):
+            variants.append(f"**/{collapsed}")
+    return list(dict.fromkeys(variants))
 
 
 @dataclass(frozen=True)
@@ -89,11 +111,13 @@ class GlobSearchTool:
         pattern = str(arguments["pattern"])
         max_results = int(arguments.get("max_results", 100))
         results: list[str] = []
-        for path in sorted(self.context.workspace.glob(pattern)):
+        for path in sorted(self.context.workspace.rglob("*")):
             if len(results) >= max_results:
                 break
             if should_skip_path(path) or not path.is_file():
                 continue
-            resolved = self.context.resolve_workspace_path(str(path))
-            results.append(resolved.relative_to(self.context.workspace).as_posix())
+            relative_path = path.relative_to(self.context.workspace).as_posix()
+            if not _matches_grep_glob(path.name, relative_path, pattern):
+                continue
+            results.append(relative_path)
         return "\n".join(results) if results else "no matches"

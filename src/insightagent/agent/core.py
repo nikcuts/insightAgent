@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -11,8 +13,14 @@ from .memory import SlidingWindowMemory
 from ..api.messages import Message
 from ..api.providers import ModelClient, ToolArgumentsParseError
 from ..api.resilience import ToolCallExtractor, build_repair_prompt
+from .repository_snapshot import build_repository_snapshot
 from .session import Session, SessionStore
+from .task_contracts import TaskContract, command_matches_required, extract_task_contract, is_test_file_path
 from .task_state import TaskPhase, TaskState, mark_final_answer, phase_instruction, transition_after_tool
+from ..runtime.command_validation import CommandKind, CommandValidator
+from ..runtime.failure_classifier import FailureKind
+from ..runtime.tool_context import ToolContext
+from ..runtime.types import ToolExecutionResult, ToolPermission, ToolRisk
 from ..tools import ToolRegistry
 from ..telemetry.usage import UsageTracker
 
@@ -22,6 +30,175 @@ Use tools when needed. After writing or editing code, call `run_verification` to
 Be direct, and report tool errors clearly."""
 
 TraceHandler = Callable[[dict[str, Any]], None]
+
+REPOSITORY_INSPECTION_TOOLS = {
+    "read_file",
+    "grep_search",
+    "glob_search",
+    "git_status",
+    "git_diff",
+    "lsp_diagnostics",
+    "parse_ast",
+    "get_function_signature",
+    "find_dependencies",
+    "get_code_metrics",
+}
+WORKSPACE_FILE_MUTATION_TOOLS = {"write_file", "edit_file"}
+COMMAND_VERIFICATION_TOOLS = {"run_verification", "execute_command"}
+COMMAND_VALIDATOR = CommandValidator()
+
+
+def _is_verification_attempt(name: str, arguments: dict[str, Any], expected_command: str | None) -> bool:
+    if name == "run_verification":
+        return True
+    if name != "execute_command":
+        return False
+    actual_command = str(arguments.get("command") or "")
+    if expected_command and command_matches_required(actual_command, expected_command):
+        return True
+    return COMMAND_VALIDATOR.classify(actual_command).kind == CommandKind.TEST
+
+
+def _duplicated_python_methods(context: ToolContext, arguments: dict[str, Any]) -> list[str]:
+    raw_path = str(arguments.get("path") or "")
+    if not raw_path.endswith(".py"):
+        return []
+    new_text = str(arguments.get("new") or "")
+    old_text = str(arguments.get("old") or "")
+    inserted_methods = _python_method_names(new_text) - _python_method_names(old_text)
+    if not inserted_methods:
+        return []
+    try:
+        path = context.resolve_workspace_path(raw_path)
+        source = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    existing_methods = _python_method_names(source)
+    return sorted(inserted_methods & existing_methods)
+
+
+def _python_method_names(source: str) -> set[str]:
+    names: set[str] = set()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        for match in re.finditer(r"(?m)^\s+def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", source):
+            names.add(match.group(1))
+        return names
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for item in node.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                names.add(item.name)
+    return names
+
+
+def _adds_unrequested_optional_entrypoint(task: str, arguments: dict[str, Any]) -> bool:
+    new_text = str(arguments.get("new") or arguments.get("content") or "")
+    lowered_new = new_text.lower()
+    adds_option = "@click.option" in lowered_new or ".add_argument(" in lowered_new
+    if not adds_option:
+        return False
+    lowered_task = task.lower()
+    option_requested = (
+        " option" in lowered_task
+        or " flag" in lowered_task
+        or "command-line" in lowered_task
+        or "cli option" in lowered_task
+        or "新增参数" in task
+        or "新增选项" in task
+        or re.search(r"--[A-Za-z0-9][A-Za-z0-9_-]*", task) is not None
+    )
+    return not option_requested
+
+
+def _task_requests_verification(task: str) -> bool:
+    lowered = task.lower()
+    return any(marker in lowered for marker in ("verify", "verification", "验证"))
+
+
+def _creates_unrelated_new_file(context: ToolContext, arguments: dict[str, Any]) -> bool:
+    raw_path = str(arguments.get("path") or "")
+    if not raw_path:
+        return False
+    try:
+        path = context.resolve_workspace_path(raw_path)
+    except Exception:
+        return False
+    if path.exists():
+        return False
+    suffix = path.suffix.lower()
+    if not suffix:
+        return True
+    existing_suffixes: set[str] = set()
+    for candidate in context.workspace.rglob("*"):
+        if len(existing_suffixes) >= 64:
+            break
+        if candidate.is_file() and candidate.suffix:
+            existing_suffixes.add(candidate.suffix.lower())
+    return bool(existing_suffixes) and suffix not in existing_suffixes
+
+
+def _reads_failing_test_file(arguments: dict[str, Any], task_contract: TaskContract) -> bool:
+    raw_path = str(arguments.get("path") or "").replace("\\", "/").strip("/")
+    if not raw_path:
+        return False
+    return raw_path in task_contract.failing_test_files
+
+
+def _destructive_python_rewrite_removed_symbols(context: ToolContext, arguments: dict[str, Any]) -> list[str]:
+    raw_path = str(arguments.get("path") or "")
+    if not raw_path.endswith(".py") or is_test_file_path(raw_path):
+        return []
+    new_text = str(arguments.get("content") or "")
+    if not new_text.strip():
+        return []
+    try:
+        path = context.resolve_workspace_path(raw_path)
+    except Exception:
+        return []
+    if not path.is_file():
+        return []
+    try:
+        old_text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    old_symbols = _python_structural_symbols(old_text)
+    if len(old_symbols) < 6:
+        return []
+    new_symbols = _python_structural_symbols(new_text)
+    removed = sorted(old_symbols - new_symbols)
+    if len(removed) < 3:
+        return []
+    old_lines = max(1, len(old_text.splitlines()))
+    new_lines = len(new_text.splitlines())
+    old_size = max(1, len(old_text))
+    new_size = len(new_text)
+    if len(new_symbols) <= int(len(old_symbols) * 0.7):
+        return removed
+    if new_lines <= int(old_lines * 0.75):
+        return removed
+    if new_size <= int(old_size * 0.75):
+        return removed
+    return []
+
+
+def _python_structural_symbols(source: str) -> set[str]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set(re.findall(r"(?m)^\s*(?:class|def)\s+([A-Za-z_][A-Za-z0-9_]*)\b", source))
+    symbols: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            symbols.add(node.name)
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    symbols.add(f"{node.name}.{item.name}")
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            symbols.add(node.name)
+    return symbols
 
 
 @dataclass
@@ -81,9 +258,39 @@ class CodeAgent:
         if self.task_state.phase in {TaskPhase.DONE, TaskPhase.FAILED}:
             self.task_state = TaskState()
         self.current_task = user_input
+        task_contract = extract_task_contract(user_input)
+        if task_contract.requires_repository_inspection and self.task_state.max_repairs == TaskState().max_repairs:
+            self.task_state.max_repairs = 8
+        repository_inspected = False
+        failing_tests_inspected = not task_contract.failing_test_files
+        workspace_file_mutated = False
+        existing_non_test_file_modified = False
+        post_failure_inspection_required = False
         self.messages.append(Message(role="user", content=user_input))
         self._sync_session()
         self._emit(trace, {"type": "user_message", "content": user_input})
+        if task_contract.expected_verification_command or task_contract.requires_repository_inspection:
+            self._emit(
+                trace,
+                {
+                    "type": "task_contract_detected",
+                    "expected_verification_command": task_contract.expected_verification_command,
+                    "requires_repository_inspection": task_contract.requires_repository_inspection,
+                    "failing_test_files": list(task_contract.failing_test_files),
+                },
+            )
+        if task_contract.requires_repository_inspection:
+            snapshot = build_repository_snapshot(self.tools.context.workspace)
+            self.messages.append(Message(role="user", content=snapshot.content))
+            self._sync_session()
+            self._emit(
+                trace,
+                {
+                    "type": "repository_snapshot_injected",
+                    "file_count": snapshot.file_count,
+                    "omitted_count": snapshot.omitted_count,
+                },
+            )
         saw_tool_call = False
         pending_repair = False
         nudge_attempts = 0
@@ -187,6 +394,7 @@ class CodeAgent:
                         response.content,
                         {tool["name"] for tool in self.tools.schemas()},
                         task=self.current_task,
+                        allow_codeblock_write=self.task_state.phase != TaskPhase.SUMMARIZE,
                     )
                 if recovered:
                     response.tool_calls = [item.tool_call for item in recovered]
@@ -210,15 +418,25 @@ class CodeAgent:
                     # with a "next I will..." message and no tool call; treat that as
                     # unfinished and keep steering it toward run_verification instead of
                     # accepting the dangling text as the final answer.
-                    needs_verification = self.task_state.phase in {
+                    requires_explicit_verification = bool(
+                        task_contract.expected_verification_command
+                        or task_contract.requires_repository_inspection
+                        or _task_requests_verification(self.current_task)
+                    )
+                    needs_verification = requires_explicit_verification and self.task_state.phase in {
                         TaskPhase.IMPLEMENT,
                         TaskPhase.REPAIR,
+                        TaskPhase.VERIFY,
                     }
+                    contract_needs_patch = (
+                        task_contract.requires_existing_non_test_patch
+                        and not existing_non_test_file_modified
+                    )
                     if self.resilience_enabled:
                         should_nudge = (
                             self.require_tool_use
                             and not failed_phase
-                            and (not saw_tool_call or pending_repair or needs_verification)
+                            and (not saw_tool_call or pending_repair or needs_verification or contract_needs_patch)
                             and nudge_attempts < self.max_nudge_attempts
                         )
                     else:
@@ -283,7 +501,22 @@ class CodeAgent:
                         "arguments": tool_call.arguments,
                     },
                 )
-                execution_result = self.tools.execute(tool_call.name, tool_call.arguments)
+                execution_result = self._enforce_task_contract(
+                    tool_call.name,
+                    tool_call.arguments,
+                    task_contract,
+                    repository_inspected=repository_inspected,
+                    failing_tests_inspected=failing_tests_inspected,
+                    workspace_file_mutated=workspace_file_mutated,
+                    existing_non_test_file_modified=existing_non_test_file_modified,
+                    post_failure_inspection_required=post_failure_inspection_required,
+                )
+                existing_non_test_mutation = self._is_existing_non_test_file_mutation(
+                    tool_call.name,
+                    tool_call.arguments,
+                )
+                if execution_result is None:
+                    execution_result = self.tools.execute(tool_call.name, tool_call.arguments)
                 tool_result = Message(
                     role="tool",
                     content=execution_result.content,
@@ -332,7 +565,37 @@ class CodeAgent:
                     },
                 )
                 self.messages.append(tool_result)
-                self._transition_task_phase(tool_call.name, tool_result.content, tool_result.is_error, trace)
+                if tool_call.name in REPOSITORY_INSPECTION_TOOLS and not tool_result.is_error:
+                    repository_inspected = True
+                    post_failure_inspection_required = False
+                if (
+                    tool_call.name == "read_file"
+                    and not tool_result.is_error
+                    and _reads_failing_test_file(tool_call.arguments, task_contract)
+                ):
+                    failing_tests_inspected = True
+                if tool_call.name in WORKSPACE_FILE_MUTATION_TOOLS and not tool_result.is_error:
+                    workspace_file_mutated = True
+                    existing_non_test_file_modified = (
+                        existing_non_test_file_modified or existing_non_test_mutation
+                    )
+                transition_tool_name = tool_call.name
+                if (
+                    tool_call.name == "lsp_diagnostics"
+                    and task_contract.expected_verification_command
+                    and not tool_result.is_error
+                ):
+                    transition_tool_name = "read_file"
+                self._transition_task_phase(transition_tool_name, tool_result.content, tool_result.is_error, trace)
+                if (
+                    tool_result.is_error
+                    and _is_verification_attempt(
+                        tool_call.name,
+                        tool_call.arguments,
+                        task_contract.expected_verification_command,
+                    )
+                ):
+                    post_failure_inspection_required = True
                 self._sync_session()
                 if tool_result.is_error:
                     pending_repair = True
@@ -427,6 +690,10 @@ class CodeAgent:
             for name in ("run_verification", "execute_command"):
                 if name in available:
                     return name
+        if self.task_state.phase == TaskPhase.REPAIR:
+            for name in ("edit_file", "read_file", "grep_search", "run_verification", "execute_command"):
+                if name in available:
+                    return name
         for name in ("write_file", "edit_file", "run_verification", "execute_command"):
             if name in available:
                 return name
@@ -453,8 +720,269 @@ class CodeAgent:
             "You returned no tool calls, but this task requires actual tool execution. Call an available tool "
             "directly now with valid JSON arguments. Do not put the final code only in prose or markdown. "
             "Example of the textual tool-call protocol the runtime accepts: "
-            "<tool_call>{\"name\": \"write_file\", \"arguments\": {\"path\": \"main.py\", \"content\": \"...\"}}</tool_call>"
+            "<tool_call>{\"name\": \"edit_file\", \"arguments\": {\"path\": \"main.py\", \"old\": \"...\", \"new\": \"...\"}}</tool_call>. "
+            "For existing repository files, prefer targeted `edit_file`; use `write_file` only for new small files."
             + verification_reminder
+        )
+
+    def _enforce_task_contract(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        task_contract: TaskContract,
+        *,
+        repository_inspected: bool,
+        failing_tests_inspected: bool,
+        workspace_file_mutated: bool,
+        existing_non_test_file_modified: bool,
+        post_failure_inspection_required: bool,
+    ) -> ToolExecutionResult | None:
+        expected_command = task_contract.expected_verification_command
+        is_verification_attempt = _is_verification_attempt(name, arguments, expected_command)
+        if is_verification_attempt and expected_command:
+            actual_command = str(arguments.get("command") or "")
+            if not command_matches_required(actual_command, expected_command):
+                return self._blocked_tool_result(
+                    name,
+                    arguments,
+                    content=(
+                        f"Tool contract violation: {name} does not match the required "
+                        "verification command.\n"
+                        f"Required command: {expected_command}\n"
+                        "Call run_verification with exactly this command before finalizing."
+                    ),
+                    repair_guidance=(
+                        "Use the exact verification command from the user task. Do not substitute a "
+                        "demo command, a partial command, or a different test runner."
+                    ),
+                )
+        if (
+            is_verification_attempt
+            and task_contract.requires_existing_non_test_patch
+            and workspace_file_mutated
+            and not existing_non_test_file_modified
+        ):
+            return self._blocked_tool_result(
+                name,
+                arguments,
+                content=(
+                    "Tool contract violation: Modify at least one existing non-test repository file "
+                    "before verifying a repository repair. Added standalone files are not enough for "
+                    "this task."
+                ),
+                repair_guidance=(
+                    "Inspect the existing implementation and patch the non-test source or configuration "
+                    "that causes the failing behavior, then run the required verification command."
+                ),
+            )
+        if (
+            task_contract.requires_repository_inspection
+            and name in WORKSPACE_FILE_MUTATION_TOOLS
+            and not repository_inspected
+        ):
+            return self._blocked_tool_result(
+                name,
+                arguments,
+                content=(
+                    "Tool contract violation: Inspect the existing repository before modifying files. "
+                    "Use read_file, grep_search, glob_search, git_status, or git_diff to identify the "
+                    "relevant existing source and tests, then edit the repository files."
+                ),
+                repair_guidance=(
+                    "Inspect the repository first. Prefer reading relevant existing files and tests over "
+                    "creating standalone demo files."
+                ),
+            )
+        if (
+            task_contract.requires_repository_inspection
+            and task_contract.failing_test_files
+            and name in WORKSPACE_FILE_MUTATION_TOOLS
+            and not failing_tests_inspected
+        ):
+            examples = ", ".join(task_contract.failing_test_files[:3])
+            return self._blocked_tool_result(
+                name,
+                arguments,
+                content=(
+                    "Tool contract violation: Read the fail-to-pass test body before modifying source. "
+                    f"Use read_file on the relevant test file first: {examples}. Grep results or test names "
+                    "alone are not enough to identify the exact exercised call path."
+                ),
+                repair_guidance=(
+                    "Call read_file with start_line/max_lines around the failing test, then patch the source "
+                    "function or constructor directly exercised by that test line."
+                ),
+            )
+        if (
+            task_contract.requires_existing_non_test_patch
+            and name == "write_file"
+            and _creates_unrelated_new_file(self.tools.context, arguments)
+        ):
+            return self._blocked_tool_result(
+                name,
+                arguments,
+                content=(
+                    "Tool contract violation: Do not create unrelated new files with extensions that do "
+                    "not already exist in this repository repair. Patch the existing source file imported "
+                    "by the failing tests instead."
+                ),
+                repair_guidance=(
+                    "Use grep_search/read_file to locate the existing implementation and edit that file. "
+                    "Do not create standalone scratch or inferred files for a repository repair."
+                ),
+            )
+        if task_contract.requires_existing_non_test_patch and name == "write_file":
+            removed_symbols = _destructive_python_rewrite_removed_symbols(self.tools.context, arguments)
+            if removed_symbols:
+                preview = ", ".join(removed_symbols[:5])
+                suffix = "..." if len(removed_symbols) > 5 else ""
+                return self._blocked_tool_result(
+                    name,
+                    arguments,
+                    content=(
+                        "Tool contract violation: Refusing destructive Python source rewrite of an "
+                        "existing repository file. The proposed write removes existing structure such as "
+                        f"{preview}{suffix}. Use targeted edit_file around the relevant function instead."
+                    ),
+                    repair_guidance=(
+                        "Do not replace a large existing Python source file with a partial reconstruction. "
+                        "Read the relevant line range, then use edit_file with precise old/new text."
+                    ),
+                )
+        if post_failure_inspection_required and name in WORKSPACE_FILE_MUTATION_TOOLS:
+            return self._blocked_tool_result(
+                name,
+                arguments,
+                content=(
+                    "Tool contract violation: Inspect the latest failing verification before editing again. "
+                    "Use read_file with relevant line ranges, grep_search, git_diff, parse_ast, or "
+                    "get_function_signature to compare the failure with the current code and patch."
+                ),
+                repair_guidance=(
+                    "Do not keep guessing after a failed verification. Inspect the current source, traceback, "
+                    "or diff first, then make a targeted edit."
+                ),
+            )
+        if name == "edit_file":
+            if (
+                task_contract.requires_existing_non_test_patch
+                and _adds_unrequested_optional_entrypoint(self.current_task, arguments)
+            ):
+                return self._blocked_tool_result(
+                    name,
+                    arguments,
+                    content=(
+                        "Tool contract violation: Do not hide required fixes behind new optional flags, "
+                        "commands, config switches, or alternate entrypoints unless the issue explicitly "
+                        "asks for them. Patch the failing default path instead."
+                    ),
+                    repair_guidance=(
+                        "Do not add a new CLI option as a workaround. Modify the existing behavior exercised "
+                        "by the failing tests and then run the exact verification command."
+                    ),
+                )
+            duplicated_methods = _duplicated_python_methods(self.tools.context, arguments)
+            if duplicated_methods:
+                methods = ", ".join(duplicated_methods)
+                return self._blocked_tool_result(
+                    name,
+                    arguments,
+                    content=(
+                        f"Tool contract violation: {arguments.get('path')} already defines method(s): "
+                        f"{methods}. Do not insert duplicate Python method definitions by editing the "
+                        "class line or an unrelated snippet. Use parse_ast or get_function_signature to "
+                        "locate the existing method, then edit that method body."
+                    ),
+                    repair_guidance=(
+                        "Use parse_ast or get_function_signature to find the existing method line, then "
+                        "use read_file with start_line/max_lines and edit the existing method body."
+                    ),
+                )
+        if (
+            task_contract.requires_existing_non_test_patch
+            and name == "edit_file"
+            and arguments.get("replace_all") is True
+        ):
+            old_text = str(arguments.get("old") or "")
+            target_path = str(arguments.get("path") or "")
+            if old_text and target_path and not is_test_file_path(target_path):
+                try:
+                    path = self.tools.context.resolve_workspace_path(target_path)
+                    count = path.read_text(encoding="utf-8").count(old_text) if path.is_file() else 0
+                except Exception:
+                    count = 0
+                if count > 1:
+                    return self._blocked_tool_result(
+                        name,
+                        arguments,
+                        content=(
+                            "Tool contract violation: Avoid replace_all=True when the target snippet appears "
+                            f"{count} times in an existing repository source file. This can corrupt adjacent "
+                            "logic and cause repair loops. Make the old text unique with surrounding context "
+                            "or rewrite the single relevant file intentionally."
+                        ),
+                        repair_guidance=(
+                            "Do not use replace_all=True for repeated source snippets in repository repair "
+                            "tasks. Read the file, include enough surrounding context to target one occurrence, "
+                            "then use a single targeted edit_file replacement."
+                        ),
+                    )
+        if task_contract.protects_test_files and name in WORKSPACE_FILE_MUTATION_TOOLS:
+            path = str(arguments.get("path") or "")
+            if is_test_file_path(path):
+                return self._blocked_tool_result(
+                    name,
+                    arguments,
+                    content=(
+                        "Tool contract violation: Do not modify test files for this repository repair task. "
+                        "Fix the existing source code instead, then run the required verification command."
+                    ),
+                    repair_guidance=(
+                        "Revert the test-edit strategy. Inspect and modify the implementation files that make "
+                        "the existing tests pass."
+                    ),
+                )
+        return None
+
+    def _is_existing_non_test_file_mutation(self, name: str, arguments: dict[str, Any]) -> bool:
+        if name not in WORKSPACE_FILE_MUTATION_TOOLS:
+            return False
+        raw_path = str(arguments.get("path") or "")
+        if not raw_path or is_test_file_path(raw_path):
+            return False
+        try:
+            path = self.tools.context.resolve_workspace_path(raw_path)
+        except Exception:
+            return False
+        return path.exists() and path.is_file()
+
+    def _blocked_tool_result(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        content: str,
+        repair_guidance: str,
+    ) -> ToolExecutionResult:
+        try:
+            spec = self.tools.spec(name)
+            permission = spec.required_permission
+            risk = spec.risk
+        except KeyError:
+            permission = ToolPermission.READ
+            risk = ToolRisk.LOW
+        return ToolExecutionResult(
+            name=name,
+            arguments=arguments,
+            content=content,
+            is_error=True,
+            failure_kind=FailureKind.TOOL_PROTOCOL_ERROR,
+            retryable=True,
+            repair_guidance=repair_guidance,
+            permission=permission,
+            risk=risk,
+            suppressed=True,
+            metadata={"blocked_by": "task_contract"},
         )
 
     def _execute_tool_call(self, tool_call_id: str, name: str, arguments: dict[str, Any]) -> Message:

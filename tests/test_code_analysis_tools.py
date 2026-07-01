@@ -86,6 +86,40 @@ class CodeAnalysisToolTests(unittest.TestCase):
         self.assertEqual(function["signature"], "def build(name: str) -> Worker")
         self.assertIn("function not found: missing", missing)
 
+    def test_get_function_signature_disambiguates_duplicate_method_names(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "sample.py"
+            source.write_text(
+                textwrap.dedent(
+                    '''
+                    class SetupState:
+                        def __init__(self, app):
+                            self.app = app
+
+                    class Blueprint:
+                        def __init__(self, name):
+                            self.name = name
+                    '''
+                ).lstrip(),
+                encoding="utf-8",
+            )
+            registry = ToolRegistry(context=ToolContext(workspace=root))
+
+            ambiguous = json.loads(
+                registry.run("get_function_signature", {"path": "sample.py", "function_name": "__init__"})
+            )
+            blueprint = json.loads(
+                registry.run(
+                    "get_function_signature",
+                    {"path": "sample.py", "function_name": "__init__", "class_name": "Blueprint"},
+                )
+            )
+
+        self.assertEqual([match["class_name"] for match in ambiguous["matches"]], ["SetupState", "Blueprint"])
+        self.assertEqual(blueprint["class_name"], "Blueprint")
+        self.assertEqual(blueprint["signature"], "def __init__(self, name)")
+
     def test_find_dependencies_classifies_imports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -41,8 +41,8 @@ class ToolProfileTests(unittest.TestCase):
         self.assertIn("edit_file", names)
         self.assertIn("grep_search", names)
         self.assertIn("todo_write", names)
-        self.assertNotIn("parse_ast", names)
-        self.assertNotIn("get_function_signature", names)
+        self.assertIn("parse_ast", names)
+        self.assertIn("get_function_signature", names)
         self.assertNotIn("find_dependencies", names)
         self.assertNotIn("get_code_metrics", names)
 

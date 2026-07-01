@@ -40,6 +40,13 @@ class RunTaskPromptTests(unittest.TestCase):
         self.assertIn("不要用普通文本、Markdown 或 JSON 片段模拟工具调用", system_prompt)
         self.assertIn("只有名称以 mcp_ 开头的工具才算 MCP 工具", system_prompt)
         self.assertIn("不要重复调用已经获得足够证据的工具", system_prompt)
+        self.assertIn("not a throwaway demo", system_prompt)
+        self.assertIn("Inspect the repository before modifying it", system_prompt)
+        self.assertIn("exact verification command", system_prompt)
+        self.assertIn("Do not create unrelated standalone demo files", system_prompt)
+        self.assertIn("Do not hide required fixes behind new optional flags", system_prompt)
+        self.assertIn("read the fail-to-pass test body", system_prompt)
+        self.assertIn("call site", system_prompt)
 
 
 if __name__ == "__main__":

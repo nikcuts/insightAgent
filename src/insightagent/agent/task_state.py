@@ -21,7 +21,7 @@ class TaskState:
     phase: TaskPhase = TaskPhase.PLAN
     verification_attempts: int = 0
     repair_attempts: int = 0
-    max_repairs: int = 3
+    max_repairs: int = 5
     last_error: str | None = None
 
 
@@ -66,6 +66,10 @@ def transition_after_tool(
     if state.phase in {TaskPhase.DONE, TaskPhase.FAILED}:
         return old_phase, state.phase
     if is_error:
+        if _is_tool_usage_error(tool_name, tool_content):
+            state.last_error = tool_content
+            state.phase = TaskPhase.REPAIR
+            return old_phase, state.phase
         _enter_repair_or_failed(state, tool_content)
         return old_phase, state.phase
     if tool_name in IMPLEMENTATION_TOOLS:
@@ -90,6 +94,21 @@ def _enter_repair_or_failed(state: TaskState, error: str) -> None:
     state.last_error = error
     state.repair_attempts += 1
     state.phase = TaskPhase.FAILED if state.repair_attempts >= state.max_repairs else TaskPhase.REPAIR
+
+
+def _is_tool_usage_error(tool_name: str, tool_content: str) -> bool:
+    lowered = tool_content.lower()
+    if "tool contract violation" in lowered:
+        return True
+    if "toolargumentsparseerror" in lowered:
+        return True
+    if tool_name == "edit_file" and "old text not found" in lowered:
+        return True
+    if tool_name in {"edit_file", "write_file"} and "invalid python syntax" in lowered:
+        return True
+    if tool_name == "edit_file" and "no-op edit_file" in lowered:
+        return True
+    return False
 
 
 def _verification_succeeded(tool_name: str, tool_content: str) -> bool:

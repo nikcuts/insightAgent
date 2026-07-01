@@ -188,6 +188,8 @@ class ToolRegistry:
         return result
 
     def _record_outcome(self, signature: str, spec: ToolSpec, result: ToolExecutionResult) -> None:
+        if self._resilience_enabled and not self._is_read_only(spec):
+            self._recent_success.clear()
         if not result.is_error:
             self._backoff_attempts.pop(signature, None)
             if self._resilience_enabled and self._is_read_only(spec):

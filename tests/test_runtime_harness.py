@@ -113,6 +113,96 @@ class RuntimeHarnessTests(unittest.TestCase):
         self.assertIn("SyntaxError", result.content)
         self.assertFalse(result.retryable)
 
+    def test_workspace_mutation_invalidates_readonly_dedup_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            path = workspace / "calc.py"
+            path.write_text("value = 'old'\n", encoding="utf-8")
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            first_read = registry.execute("read_file", {"path": "calc.py"})
+            edit = registry.execute(
+                "edit_file",
+                {"path": "calc.py", "old": "old", "new": "new"},
+            )
+            second_read = registry.execute("read_file", {"path": "calc.py"})
+
+        self.assertFalse(first_read.is_error)
+        self.assertFalse(edit.is_error)
+        self.assertFalse(second_read.is_error)
+        self.assertFalse(second_read.suppressed)
+        self.assertIn("new", second_read.content)
+        self.assertNotIn("刚刚执行过", second_read.content)
+
+    def test_read_file_supports_line_ranges_for_large_file_navigation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            path = workspace / "large.py"
+            path.write_text("one\n# target\ntwo\nthree\n", encoding="utf-8")
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            result = registry.execute("read_file", {"path": "large.py", "start_line": 2, "max_lines": 2})
+
+        self.assertFalse(result.is_error)
+        self.assertIn("large.py lines 2-3", result.content)
+        self.assertIn("2: # target", result.content)
+        self.assertIn("3: two", result.content)
+        self.assertNotIn("1: one", result.content)
+
+    def test_read_file_large_file_without_range_returns_navigation_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            path = workspace / "large.py"
+            path.write_text("".join(f"line {index}\n" for index in range(1, 452)), encoding="utf-8")
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            result = registry.execute("read_file", {"path": "large.py"})
+
+        self.assertFalse(result.is_error)
+        self.assertIn("large.py has 451 lines", result.content)
+        self.assertIn("read_file", result.content)
+        self.assertIn("start_line", result.content)
+        self.assertIn("grep_search", result.content)
+        self.assertNotIn("line 451", result.content)
+
+    def test_grep_search_glob_matches_relative_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            source = workspace / "src" / "pkg"
+            source.mkdir(parents=True)
+            (source / "blueprints.py").write_text("class Blueprint(Scaffold):\n    pass\n", encoding="utf-8")
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            result = registry.execute(
+                "grep_search",
+                {"pattern": r"class Blueprint\(", "glob": "**/*.py"},
+            )
+
+        self.assertFalse(result.is_error)
+        self.assertIn("src/pkg/blueprints.py:1:class Blueprint(Scaffold):", result.content)
+
+    def test_grep_search_glob_matches_src_package_suffix_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            source = workspace / "src" / "flask"
+            source.mkdir(parents=True)
+            (source / "blueprints.py").write_text("class Blueprint(Scaffold):\n    pass\n", encoding="utf-8")
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            direct = registry.execute(
+                "grep_search",
+                {"pattern": r"class Blueprint\(", "glob": "flask/*.py"},
+            )
+            recursive = registry.execute(
+                "grep_search",
+                {"pattern": r"class Blueprint\(", "glob": "flask/**/*.py"},
+            )
+
+        self.assertFalse(direct.is_error)
+        self.assertFalse(recursive.is_error)
+        self.assertIn("src/flask/blueprints.py:1:class Blueprint(Scaffold):", direct.content)
+        self.assertIn("src/flask/blueprints.py:1:class Blueprint(Scaffold):", recursive.content)
+
     def test_failure_classifier_marks_network_errors_as_non_retryable_environment_failures(self) -> None:
         _CommandKind, _CommandValidator, FailureClassifier, FailureKind, *_ = load_runtime_api()
         content = "exit_code: 6\nstdout:\n\nstderr:\ncurl: (6) Could not resolve host: example.test"
@@ -122,6 +212,461 @@ class RuntimeHarnessTests(unittest.TestCase):
         self.assertEqual(classification.kind, FailureKind.NETWORK_ERROR)
         self.assertFalse(classification.retryable)
         self.assertIn("network", classification.repair_guidance.lower())
+
+    def test_failure_classifier_guides_format_string_index_errors(self) -> None:
+        _CommandKind, _CommandValidator, FailureClassifier, FailureKind, *_ = load_runtime_api()
+        content = (
+            "exit_code: 1\nstdout:\nFAILED tests/test_cli.py::TestRoutes::test_host\n"
+            "E       AssertionError: assert 1 == 0\n"
+            "E        +  where 1 = <Result IndexError('Replacement index 2 out of range for positional args tuple')>.exit_code"
+        )
+
+        classification = FailureClassifier().classify("run_verification", content, is_error=True)
+
+        self.assertEqual(classification.kind, FailureKind.CODE_ERROR)
+        self.assertIn("format string", classification.repair_guidance)
+        self.assertIn("placeholders", classification.repair_guidance)
+
+    def test_failure_classifier_guides_missing_expected_exception_at_call_site(self) -> None:
+        _CommandKind, _CommandValidator, FailureClassifier, FailureKind, *_ = load_runtime_api()
+        content = (
+            "exit_code: 1\nstdout:\n"
+            "FAILED tests/test_blueprints.py::test_dotted_name_not_allowed\n"
+            "    def test_dotted_name_not_allowed(app, client):\n"
+            ">       with pytest.raises(ValueError):\n"
+            "E       Failed: DID NOT RAISE <class 'ValueError'>\n"
+            "        flask.Blueprint(\"app.ui\", __name__)\n"
+        )
+
+        classification = FailureClassifier().classify("run_verification", content, is_error=True)
+
+        self.assertEqual(classification.kind, FailureKind.TEST_FAILURE)
+        self.assertIn("call site", classification.repair_guidance)
+        self.assertIn("constructor", classification.repair_guidance)
+
+    def test_failure_classifier_guides_assertion_to_value_error_conversion(self) -> None:
+        _CommandKind, _CommandValidator, FailureClassifier, FailureKind, *_ = load_runtime_api()
+        content = (
+            "exit_code: 1\nstdout:\n"
+            "with pytest.raises(ValueError):\n"
+            "    bp.add_url_rule('/', view_func=view)\n"
+            "E           AssertionError: Blueprint view function name should not contain dots\n"
+        )
+
+        classification = FailureClassifier().classify("run_verification", content, is_error=True)
+
+        self.assertEqual(classification.kind, FailureKind.TEST_FAILURE)
+        self.assertIn("explicit ValueError", classification.repair_guidance)
+        self.assertIn("assert", classification.repair_guidance)
+
+    def test_edit_file_old_text_not_found_guides_symbol_search(self) -> None:
+        _CommandKind, _CommandValidator, FailureClassifier, FailureKind, *_ = load_runtime_api()
+
+        classification = FailureClassifier().classify("edit_file", "ValueError: old text not found", is_error=True)
+
+        self.assertEqual(classification.kind, FailureKind.CODE_ERROR)
+        self.assertIn("grep_search", classification.repair_guidance)
+        self.assertIn("unique", classification.repair_guidance)
+
+    def test_edit_file_exception_preserves_old_text_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            (workspace / "cli.py").write_text("def routes_command():\n    pass\n", encoding="utf-8")
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            result = registry.execute(
+                "edit_file",
+                {"path": "cli.py", "old": "headers = (...)", "new": "headers = (..., 'Subdomain')"},
+            )
+
+        self.assertTrue(result.is_error)
+        self.assertIn("old text not found", result.content)
+        self.assertIn("grep_search", result.repair_guidance)
+        self.assertIn("narrow file section", result.repair_guidance)
+
+    def test_edit_file_accepts_unique_quote_style_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            (workspace / "blueprints.py").write_text(
+                "    def add_url_rule(self, endpoint):\n"
+                "        if endpoint:\n"
+                "            assert \".\" not in endpoint, \"Blueprint endpoints should not contain dots\"\n",
+                encoding="utf-8",
+            )
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            result = registry.execute(
+                "edit_file",
+                {
+                    "path": "blueprints.py",
+                    "old": (
+                        "        if endpoint:\n"
+                        "            assert '.' not in endpoint, 'Blueprint endpoints should not contain dots'\n"
+                    ),
+                    "new": (
+                        "        if endpoint and '.' in endpoint:\n"
+                        "            raise ValueError('Blueprint endpoint cannot contain dots')\n"
+                    ),
+                },
+            )
+
+            edited = (workspace / "blueprints.py").read_text(encoding="utf-8")
+
+        self.assertFalse(result.is_error)
+        self.assertIn("raise ValueError", edited)
+        self.assertNotIn("assert", edited)
+
+    def test_edit_file_accepts_unique_whitespace_insensitive_match(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            path = workspace / "cli.py"
+            path.write_text(
+                "def routes_command():\n"
+                "    widths = (\n"
+                "        max(len(rule.endpoint) for rule in rules),\n"
+                "        max(len(methods) for methods in rule_methods),\n"
+                "        max(len(rule.rule) for rule in rules),\n"
+                "    )\n"
+                "    return widths\n",
+                encoding="utf-8",
+            )
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            result = registry.execute(
+                "edit_file",
+                {
+                    "path": "cli.py",
+                    "old": (
+                        "widths = (max(len(rule.endpoint) for rule in rules), "
+                        "max(len(methods) for methods in rule_methods), max(len(rule.rule) for rule in rules))"
+                    ),
+                    "new": (
+                        "widths = (\n"
+                        "        max(len(rule.endpoint) for rule in rules),\n"
+                        "        max(len(methods) for methods in rule_methods),\n"
+                        "        max(len(rule.rule) for rule in rules),\n"
+                        "        max(len(rule.subdomain or '') for rule in rules),\n"
+                        "    )"
+                    ),
+                },
+            )
+
+            edited = path.read_text(encoding="utf-8")
+
+        self.assertFalse(result.is_error)
+        self.assertIn("match=whitespace_insensitive", result.content)
+        self.assertIn("rule.subdomain", edited)
+        self.assertEqual(edited.count("widths = ("), 1)
+
+    def test_edit_file_indents_multiline_replacement_to_matched_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            path = workspace / "cli.py"
+            path.write_text(
+                "def routes_command():\n"
+                "    headers = (\"Endpoint\", \"Methods\", \"Rule\")\n"
+                "    widths = (\n"
+                "        max(len(rule.endpoint) for rule in rules),\n"
+                "        max(len(methods) for methods in rule_methods),\n"
+                "        max(len(rule.rule) for rule in rules),\n"
+                "    )\n"
+                "    return headers, widths\n",
+                encoding="utf-8",
+            )
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            result = registry.execute(
+                "edit_file",
+                {
+                    "path": "cli.py",
+                    "old": (
+                        "headers = (\"Endpoint\", \"Methods\", \"Rule\") widths = "
+                        "(max(len(rule.endpoint) for rule in rules), "
+                        "max(len(methods) for methods in rule_methods), max(len(rule.rule) for rule in rules))"
+                    ),
+                    "new": (
+                        "headers = (\"Endpoint\", \"Methods\", \"Rule\", \"Subdomain\")\n"
+                        "widths = (\n"
+                        "    max(len(rule.endpoint) for rule in rules),\n"
+                        "    max(len(methods) for methods in rule_methods),\n"
+                        "    max(len(rule.rule) for rule in rules),\n"
+                        "    max(len(rule.subdomain or '') for rule in rules),\n"
+                        ")"
+                    ),
+                },
+            )
+
+            edited = path.read_text(encoding="utf-8")
+
+        self.assertFalse(result.is_error)
+        self.assertIn('    headers = ("Endpoint", "Methods", "Rule", "Subdomain")', edited)
+        self.assertIn("    widths = (", edited)
+        self.assertIn("        max(len(rule.subdomain or '') for rule in rules),", edited)
+
+    def test_edit_file_accepts_replacement_with_existing_context_indent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            path = workspace / "app.py"
+            path.write_text(
+                "class App:\n"
+                "    def register_blueprint(self, blueprint, options):\n"
+                "        blueprint.register(self, options)\n",
+                encoding="utf-8",
+            )
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            result = registry.execute(
+                "edit_file",
+                {
+                    "path": "app.py",
+                    "old": "blueprint.register(self, options)",
+                    "new": (
+                        "        if '.' in blueprint.name:\n"
+                        "            raise ValueError('Blueprint name cannot contain dots.')\n"
+                        "        blueprint.register(self, options)"
+                    ),
+                },
+            )
+
+            edited = path.read_text(encoding="utf-8")
+
+        self.assertFalse(result.is_error)
+        self.assertIn("        if '.' in blueprint.name:", edited)
+        self.assertNotIn("                if '.' in blueprint.name:", edited)
+
+    def test_edit_file_does_not_double_indent_preindented_replacement_body(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            path = workspace / "blueprints.py"
+            path.write_text(
+                "class Blueprint:\n"
+                "    def __init__(\n"
+                "        self,\n"
+                "        name,\n"
+                "    ):\n"
+                "        super().__init__()\n"
+                "        self.name = name\n",
+                encoding="utf-8",
+            )
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            result = registry.execute(
+                "edit_file",
+                {
+                    "path": "blueprints.py",
+                    "old": (
+                        "def __init__(\n"
+                        "        self,\n"
+                        "        name,\n"
+                        "    ):\n"
+                        "        super().__init__()"
+                    ),
+                    "new": (
+                        "def __init__(\n"
+                        "        self,\n"
+                        "        name,\n"
+                        "    ):\n"
+                        "        if '.' in name:\n"
+                        "            raise ValueError('bad name')\n"
+                        "        super().__init__()"
+                    ),
+                },
+            )
+
+            edited = path.read_text(encoding="utf-8")
+
+        self.assertFalse(result.is_error)
+        self.assertIn("        if '.' in name:", edited)
+        self.assertNotIn("            if '.' in name:", edited)
+
+    def test_edit_file_rejects_python_syntax_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            path = workspace / "cli.py"
+            original = "def routes_command():\n    row = '{}'\n    print(row)\n"
+            path.write_text(original, encoding="utf-8")
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            result = registry.execute(
+                "edit_file",
+                {
+                    "path": "cli.py",
+                    "old": "    print(row)\n",
+                    "new": "print(row)\n    print(row)\n",
+                },
+            )
+
+            edited = path.read_text(encoding="utf-8")
+
+        self.assertTrue(result.is_error)
+        self.assertIn("invalid Python syntax", result.content)
+        self.assertEqual(edited, original)
+
+    def test_write_file_rejects_python_syntax_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            path = workspace / "blueprints.py"
+            original = "class Blueprint:\n    def __init__(self):\n        self.name = 'ok'\n"
+            path.write_text(original, encoding="utf-8")
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            result = registry.execute(
+                "write_file",
+                {"path": "blueprints.py", "content": "    def __init__(self):\n        pass\n"},
+            )
+
+            edited = path.read_text(encoding="utf-8")
+
+        self.assertTrue(result.is_error)
+        self.assertIn("invalid Python syntax", result.content)
+        self.assertEqual(edited, original)
+
+    def test_edit_file_rejects_super_init_keyword_expansion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            path = workspace / "blueprints.py"
+            original = (
+                "class Blueprint:\n"
+                "    def __init__(self, import_name, url_prefix=None):\n"
+                "        super().__init__(\n"
+                "            import_name=import_name,\n"
+                "        )\n"
+                "        self.url_prefix = url_prefix\n"
+            )
+            path.write_text(original, encoding="utf-8")
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            result = registry.execute(
+                "edit_file",
+                {
+                    "path": "blueprints.py",
+                    "old": "            import_name=import_name,\n",
+                    "new": "            import_name=import_name,\n            url_prefix=url_prefix,\n",
+                },
+            )
+
+            edited = path.read_text(encoding="utf-8")
+
+        self.assertTrue(result.is_error)
+        self.assertIn("super().__init__ keyword expansion", result.content)
+        self.assertEqual(edited, original)
+
+    def test_edit_file_converts_multiline_assert_with_message_to_raise(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            path = workspace / "blueprints.py"
+            path.write_text(
+                "class Blueprint:\n"
+                "    def add_url_rule(self, endpoint, view_func):\n"
+                "        if view_func and hasattr(view_func, \"__name__\"):\n"
+                "            assert (\n"
+                "                \".\" not in view_func.__name__\n"
+                "            ), \"Blueprint view function name should not contain dots\"\n"
+                "        self.record(endpoint)\n",
+                encoding="utf-8",
+            )
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            result = registry.execute(
+                "edit_file",
+                {
+                    "path": "blueprints.py",
+                    "old": 'assert ("." not in view_func.__name__)',
+                    "new": (
+                        'if "." in view_func.__name__:\n'
+                        '    raise ValueError("Blueprint view function name should not contain dots")'
+                    ),
+                },
+            )
+
+            edited = path.read_text(encoding="utf-8")
+
+        self.assertFalse(result.is_error)
+        self.assertIn('            if "." in view_func.__name__:', edited)
+        self.assertIn(
+            '                raise ValueError("Blueprint view function name should not contain dots")',
+            edited,
+        )
+        self.assertNotIn('), "Blueprint view function name should not contain dots"', edited)
+
+    def test_edit_file_rejects_noop_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            path = workspace / "cli.py"
+            original = "def routes_command():\n    return 'old'\n"
+            path.write_text(original, encoding="utf-8")
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            result = registry.execute(
+                "edit_file",
+                {"path": "cli.py", "old": "return 'old'", "new": "return 'old'"},
+            )
+
+            edited = path.read_text(encoding="utf-8")
+
+        self.assertTrue(result.is_error)
+        self.assertIn("no-op edit_file", result.content)
+        self.assertEqual(edited, original)
+
+    def test_edit_file_rejects_header_row_format_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            path = workspace / "cli.py"
+            original = (
+                "def routes_command():\n"
+                "    headers = (\"Endpoint\", \"Methods\", \"Rule\")\n"
+                "    widths = (8, 7, 4)\n"
+                "    row = \"{{0:<{0}}}  {{1:<{1}}}  {{2:<{2}}}\".format(*widths)\n"
+                "    return row.format(*headers)\n"
+            )
+            path.write_text(original, encoding="utf-8")
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            result = registry.execute(
+                "edit_file",
+                {
+                    "path": "cli.py",
+                    "old": 'headers = ("Endpoint", "Methods", "Rule")',
+                    "new": 'headers = ("Subdomain", "Host", "Endpoint", "Methods", "Rule")',
+                },
+            )
+
+            edited = path.read_text(encoding="utf-8")
+
+        self.assertTrue(result.is_error)
+        self.assertIn("row format has 3 columns", result.content)
+        self.assertIn("headers defines 5", result.content)
+        self.assertEqual(edited, original)
+
+    def test_edit_file_rejects_widths_row_format_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            path = workspace / "cli.py"
+            original = (
+                "def routes_command():\n"
+                "    headers = (\"Endpoint\", \"Methods\", \"Rule\")\n"
+                "    widths = (8, 7, 4)\n"
+                "    row = \"{{0:<{0}}}  {{1:<{1}}}  {{2:<{2}}}\".format(*widths)\n"
+                "    return row.format(*headers)\n"
+            )
+            path.write_text(original, encoding="utf-8")
+            registry = ToolRegistry(context=ToolContext(workspace=workspace))
+
+            result = registry.execute(
+                "edit_file",
+                {
+                    "path": "cli.py",
+                    "old": "widths = (8, 7, 4)",
+                    "new": "widths = (8, 7, 4, 9)",
+                },
+            )
+
+            edited = path.read_text(encoding="utf-8")
+
+        self.assertTrue(result.is_error)
+        self.assertIn("widths defines 4", result.content)
+        self.assertIn("row format has 3 columns", result.content)
+        self.assertEqual(edited, original)
 
     def test_agent_suppresses_repeated_non_retryable_tool_calls(self) -> None:
         _CommandKind, _CommandValidator, _FailureClassifier, FailureKind, *_ = load_runtime_api()

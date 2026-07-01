@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from socket import timeout as SocketTimeout
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .messages import Message, ModelResponse, ToolCall
 from .resilience import loads_lenient
@@ -41,6 +42,10 @@ class ToolArgumentsParseError(ProviderError):
         )
 
 
+def _is_retryable_http_error(status_code: int) -> bool:
+    return status_code == 429 or 500 <= status_code < 600
+
+
 class OpenAICompatibleClient:
     """Minimal OpenAI Chat Completions compatible client."""
 
@@ -53,6 +58,10 @@ class OpenAICompatibleClient:
         temperature: float = 0.01,
         top_p: float = 0.95,
         max_tokens: int = 4096,
+        max_retries: int = 3,
+        retry_base_delay: float = 5.0,
+        sleep: Callable[[float], None] = time.sleep,
+        urlopen: Callable[..., Any] = urllib.request.urlopen,
     ) -> None:
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.model = model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
@@ -61,6 +70,10 @@ class OpenAICompatibleClient:
         self.temperature = temperature
         self.top_p = top_p
         self.max_tokens = max_tokens
+        self.max_retries = max_retries
+        self.retry_base_delay = retry_base_delay
+        self.sleep = sleep
+        self.urlopen = urlopen
         if not self.api_key:
             raise ValueError("OPENAI_API_KEY is required")
 
@@ -80,9 +93,19 @@ class OpenAICompatibleClient:
         }
         if tools:
             payload["tools"] = [self._tool_to_openai(tool) for tool in tools]
-            payload["tool_choice"] = tool_choice or "auto"
-        data = self._post(f"{self.base_url}/chat/completions", payload)
-        choice = data["choices"][0]["message"]
+            payload["tool_choice"] = self._tool_choice_to_openai(tool_choice) if tool_choice is not None else "auto"
+        choices: list[dict[str, Any]] = []
+        data: dict[str, Any] = {}
+        for attempt in range(self.max_retries + 1):
+            data = self._post(f"{self.base_url}/chat/completions", payload)
+            choices = data.get("choices") or []
+            if choices:
+                break
+            if attempt < self.max_retries:
+                self.sleep(self.retry_base_delay * (2**attempt))
+        if not choices:
+            raise ProviderError(f"OpenAI-compatible provider returned no choices: {str(data)[:500]}")
+        choice = choices[0]["message"]
         tool_calls = []
         for raw_call in choice.get("tool_calls") or []:
             function = raw_call.get("function") or {}
@@ -113,19 +136,24 @@ class OpenAICompatibleClient:
             },
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except (TimeoutError, SocketTimeout) as error:
-            raise ProviderError(
-                f"OpenAI-compatible provider timed out after {self.timeout}s. "
-                "Try a stronger function-calling model or increase --timeout."
-            ) from error
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")
-            raise ProviderError(f"OpenAI-compatible provider error {error.code}: {detail}") from error
-        except urllib.error.URLError as error:
-            raise ProviderError(f"OpenAI-compatible provider connection error: {error.reason}") from error
+        for attempt in range(self.max_retries + 1):
+            try:
+                with self.urlopen(request, timeout=self.timeout) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except (TimeoutError, SocketTimeout) as error:
+                raise ProviderError(
+                    f"OpenAI-compatible provider timed out after {self.timeout}s. "
+                    "Try a stronger function-calling model or increase --timeout."
+                ) from error
+            except urllib.error.HTTPError as error:
+                detail = error.read().decode("utf-8", errors="replace")
+                if _is_retryable_http_error(error.code) and attempt < self.max_retries:
+                    self.sleep(self.retry_base_delay * (2**attempt))
+                    continue
+                raise ProviderError(f"OpenAI-compatible provider error {error.code}: {detail}") from error
+            except urllib.error.URLError as error:
+                raise ProviderError(f"OpenAI-compatible provider connection error: {error.reason}") from error
+        raise ProviderError("OpenAI-compatible provider request failed after retries")
 
     def _message_to_openai(self, message: Message) -> dict[str, Any]:
         if message.role == "tool":
@@ -158,6 +186,11 @@ class OpenAICompatibleClient:
                 "parameters": tool["input_schema"],
             },
         }
+
+    def _tool_choice_to_openai(self, tool_choice: Any) -> Any:
+        if isinstance(tool_choice, dict) and tool_choice.get("force_tool"):
+            return "required"
+        return tool_choice
 
 
 class AnthropicClient:

@@ -315,15 +315,79 @@ V5.0 已经明显不像 V1-V4 那样偏 demo，但还不是完整 Claude Code �
 ## 测试
 
 ```bash
-python3 -m py_compile $(find src/insightagent tests -name '*.py' -print)
-python3 -m unittest discover -s tests -v
+python -m compileall src tests
+python -m unittest discover -s tests -v
 ```
 
 期望结果：
 
 ```text
-Ran 72 tests
+Ran 142 tests
 OK
+```
+
+## SWE-style 评测
+
+本地 SWE-bench 风格评测使用“基线测试失败、Agent 修改后同一验证命令通过”作为 resolved 标准。runner 会自动读取仓库 `.env`，复用 `insightagent.cli.run_task` 的 provider/model 配置。
+
+无 API dry-run：
+
+```bash
+python -m insightagent.evals.swe_style --dry-run --limit 1
+```
+
+使用 SiliconFlow + Qwen 真实模型：
+
+```bash
+python -m insightagent.evals.swe_style \
+  --provider siliconflow \
+  --model "Qwen/Qwen2.5-72B-Instruct" \
+  --limit 1 \
+  --run-id qwen-local
+```
+
+当前真实复现证据：
+
+- `reports/swe_style/qwen-local-20260701-r3/summary.md`：能修改源码但验证失败，暴露写后读缓存失效问题；
+- `reports/swe_style/qwen-local-20260701-r4/summary.md`：写后重读已恢复，但 repair budget 过小导致提前失败；
+- `reports/swe_style/qwen-local-20260701-r5/summary.md`：同一 Qwen 模型、同一 case resolved，baseline 失败、只修改 `calc.py`、指定验证命令通过。
+
+结果写入 `reports/swe_style/<run-id>/results.jsonl` 和 `reports/swe_style/<run-id>/summary.md`，每个 case 的运行 workspace 保存在 `workspaces/evals/swe_style/<run-id>/`。报告会列出 source changes、test changes 和 added files；如果最终验证通过但修改了测试，状态会标记为 `invalid_test_modified`，不会计入 resolved。
+
+如果需要在不再次调用模型的情况下复盘已有运行：
+
+```bash
+python -m insightagent.evals.swe_style --analyze-run qwen-local-20260701
+```
+
+`results.jsonl` 会包含 unified diff patch 和 failure mode，用于区分 `resolved`、`only_added_files`、`test_modified`、`no_patch`、`verification_failed` 等常见 SWE-bench 失败模式。每次运行还会写出 `predictions.jsonl`，字段为 `instance_id`、`model_name_or_path`、`model_patch`，便于后续接官方 harness。
+
+也可以读取本地 SWE-bench/Lite 风格 JSONL。字段支持 `instance_id`、`problem_statement`、`verification_command`、`repo`、`base_commit`、`FAIL_TO_PASS`；如果 JSONL 不含 `source_dir`，则通过 `--checkout-root/<sanitized-instance-id>` 定位本地 checkout。
+
+Agent 运行时会识别 SWE-style 任务契约，并在工具执行前阻止几类常见假阳性路径：
+
+- 在检查仓库前直接写文件；
+- 修改测试文件来获得通过结果；
+- 只新增 standalone/demo 文件后就验证；
+- 使用 `run_verification` 或 `execute_command` 跑了非指定验证命令。
+
+对于 SWE-style 仓库修复任务，Agent 首轮还会自动注入一个结构化 repository snapshot。该 snapshot 只包含仓库文件路径，不包含文件内容，并过滤 `.env`、私钥和证书类敏感文件名；它用于帮助模型选择 `read_file`、`grep_search`、`glob_search` 等检查动作，不替代实际读文件。
+
+```bash
+python -m insightagent.evals.swe_style \
+  --dataset path/to/swebench-lite-local.jsonl \
+  --checkout-root workspaces/swebench_checkouts \
+  --dry-run \
+  --limit 1
+```
+
+如果需要指定 predictions 文件中的模型名：
+
+```bash
+python -m insightagent.evals.swe_style \
+  --dataset path/to/swebench-lite-local.jsonl \
+  --checkout-root workspaces/swebench_checkouts \
+  --prediction-model-name InsightAgent-Qwen2.5-72B
 ```
 
 测试覆盖：

@@ -56,6 +56,75 @@ class TaskStateTests(unittest.TestCase):
         self.assertEqual(new_phase, TaskPhase.FAILED)
         self.assertEqual(state.repair_attempts, 3)
 
+    def test_default_repair_budget_allows_third_repair_failure_to_continue(self) -> None:
+        state = TaskState(phase=TaskPhase.REPAIR, repair_attempts=2)
+
+        _old_phase, new_phase = transition_after_tool(
+            state,
+            "edit_file",
+            "ValueError: old text appears 2 times; set replace_all=true or make old text unique",
+            is_error=True,
+        )
+
+        self.assertEqual(new_phase, TaskPhase.REPAIR)
+        self.assertEqual(state.repair_attempts, 3)
+
+    def test_tool_usage_error_does_not_exhaust_code_repair_budget(self) -> None:
+        state = TaskState(phase=TaskPhase.REPAIR, repair_attempts=4, max_repairs=5)
+
+        _old_phase, new_phase = transition_after_tool(
+            state,
+            "edit_file",
+            "ValueError: old text not found",
+            is_error=True,
+        )
+
+        self.assertEqual(new_phase, TaskPhase.REPAIR)
+        self.assertEqual(state.repair_attempts, 4)
+        self.assertIn("old text not found", state.last_error or "")
+
+    def test_contract_violation_does_not_exhaust_code_repair_budget(self) -> None:
+        state = TaskState(phase=TaskPhase.REPAIR, repair_attempts=4, max_repairs=5)
+
+        _old_phase, new_phase = transition_after_tool(
+            state,
+            "edit_file",
+            "Tool contract violation: Inspect the latest failing verification before editing again.",
+            is_error=True,
+        )
+
+        self.assertEqual(new_phase, TaskPhase.REPAIR)
+        self.assertEqual(state.repair_attempts, 4)
+        self.assertIn("Tool contract violation", state.last_error or "")
+
+    def test_noop_edit_error_does_not_exhaust_code_repair_budget(self) -> None:
+        state = TaskState(phase=TaskPhase.REPAIR, repair_attempts=4, max_repairs=5)
+
+        _old_phase, new_phase = transition_after_tool(
+            state,
+            "edit_file",
+            "ValueError: no-op edit_file rejected: old and new text are identical",
+            is_error=True,
+        )
+
+        self.assertEqual(new_phase, TaskPhase.REPAIR)
+        self.assertEqual(state.repair_attempts, 4)
+        self.assertIn("no-op edit_file", state.last_error or "")
+
+    def test_write_file_syntax_rejection_does_not_exhaust_code_repair_budget(self) -> None:
+        state = TaskState(phase=TaskPhase.REPAIR, repair_attempts=4, max_repairs=5)
+
+        _old_phase, new_phase = transition_after_tool(
+            state,
+            "write_file",
+            "ValueError: invalid Python syntax after edit_file; edit rejected and file left unchanged.",
+            is_error=True,
+        )
+
+        self.assertEqual(new_phase, TaskPhase.REPAIR)
+        self.assertEqual(state.repair_attempts, 4)
+        self.assertIn("invalid Python syntax", state.last_error or "")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -55,6 +55,7 @@ class GetFunctionSignatureTool:
                 "properties": {
                     "path": {"type": "string", "description": "Python file path."},
                     "function_name": {"type": "string", "description": "Function or method name."},
+                    "class_name": {"type": "string", "description": "Optional class name to disambiguate methods."},
                 },
                 "required": ["path", "function_name"],
                 "additionalProperties": False,
@@ -63,22 +64,28 @@ class GetFunctionSignatureTool:
 
     def run(self, arguments: dict[str, Any]) -> str:
         function_name = str(arguments["function_name"])
+        class_name = arguments.get("class_name")
+        class_name = str(class_name) if class_name else None
         loaded = _load_python_source(self.context, str(arguments["path"]))
         if loaded.error:
             return loaded.error
         tree = loaded.tree
         assert tree is not None
-        for node, kind in _iter_functions(tree):
-            if node.name == function_name:
-                payload = {
-                    "name": node.name,
-                    "signature": _signature(node),
-                    "line": node.lineno,
-                    "docstring": ast.get_docstring(node),
-                    "is_async": isinstance(node, ast.AsyncFunctionDef),
-                    "kind": kind,
+        matches = [
+            _function_payload(node, kind, owner)
+            for node, kind, owner in _iter_functions(tree)
+            if node.name == function_name and (class_name is None or owner == class_name)
+        ]
+        if len(matches) == 1:
+            return _json(matches[0])
+        if matches:
+            return _json(
+                {
+                    "name": function_name,
+                    "matches": matches,
+                    "message": "multiple matches; call again with class_name to select the intended method",
                 }
-                return _json(payload)
+            )
         return f"function not found: {function_name}"
 
 
@@ -270,16 +277,28 @@ def _extract_global_variables(tree: ast.Module) -> list[dict[str, Any]]:
     return variables
 
 
-def _iter_functions(tree: ast.Module) -> list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]]:
-    items: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = []
+def _iter_functions(tree: ast.Module) -> list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str | None]]:
+    items: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str | None]] = []
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            items.append((node, "function"))
+            items.append((node, "function", None))
         elif isinstance(node, ast.ClassDef):
             for child in node.body:
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    items.append((child, "method"))
+                    items.append((child, "method", node.name))
     return items
+
+
+def _function_payload(node: ast.FunctionDef | ast.AsyncFunctionDef, kind: str, class_name: str | None) -> dict[str, Any]:
+    return {
+        "name": node.name,
+        "signature": _signature(node),
+        "line": node.lineno,
+        "docstring": ast.get_docstring(node),
+        "is_async": isinstance(node, ast.AsyncFunctionDef),
+        "kind": kind,
+        "class_name": class_name,
+    }
 
 
 def _signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:

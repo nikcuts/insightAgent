@@ -66,6 +66,18 @@ class ExtendedToolTests(unittest.TestCase):
         self.assertIn("app.py", result)
         self.assertNotIn("notes.txt", result)
 
+    def test_glob_search_matches_src_package_suffix_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "src" / "flask"
+            source.mkdir(parents=True)
+            (source / "blueprints.py").write_text("class Blueprint:\n    pass\n", encoding="utf-8")
+            registry = ToolRegistry(context=ToolContext(workspace=root))
+
+            result = registry.run("glob_search", {"pattern": "flask/*.py"})
+
+        self.assertIn("src/flask/blueprints.py", result)
+
     def test_git_status_and_diff_report_repository_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

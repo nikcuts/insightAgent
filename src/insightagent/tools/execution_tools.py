@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import shlex
+import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -44,7 +47,7 @@ class ExecuteCommandTool:
         )
 
     def run(self, arguments: dict[str, Any]) -> str:
-        command = str(arguments["command"])
+        command = normalize_python_command(str(arguments["command"]))
         self.context.check_bash_allowed(command)
         cwd = self.context.resolve_workspace_path(str(arguments.get("cwd") or self.context.workspace))
         timeout = int(arguments.get("timeout", 60))
@@ -120,7 +123,7 @@ class RunVerificationTool:
         explicit = arguments.get("command")
         if explicit:
             strategy = "explicit"
-            command: str | None = str(explicit)
+            command: str | None = normalize_python_command(str(explicit))
         else:
             strategy, command = detect_verification_command(cwd)
         if command is None:
@@ -129,7 +132,7 @@ class RunVerificationTool:
                 "strategy: none\n"
                 "No verification strategy could be auto-detected (no package.json test "
                 "script, no pytest tests, and no Python files were found). Pass an explicit "
-                '`command` argument, for example {"command": "python3 main.py"}.'
+                '`command` argument, for example {"command": "python main.py"}.'
             )
         self.context.check_bash_allowed(command)
         timeout = int(arguments.get("timeout", 120))
@@ -158,8 +161,8 @@ def detect_verification_command(cwd: Path) -> tuple[str, str | None]:
     suitable was found. Detection is deterministic and never touches the network:
 
     1. ``package.json`` with a ``test`` script -> ``npm test``
-    2. pytest tests present *and* pytest importable -> ``python3 -m pytest -q``
-    3. any Python files -> ``python3 -m py_compile <files...>``
+    2. pytest tests present *and* pytest importable -> current Python ``-m pytest -q``
+    3. any Python files -> current Python ``-m py_compile <files...>``
     """
 
     package_json = cwd / "package.json"
@@ -173,13 +176,12 @@ def detect_verification_command(cwd: Path) -> tuple[str, str | None]:
             return "npm-test", "npm test"
 
     if _has_pytest_targets(cwd) and importlib.util.find_spec("pytest") is not None:
-        return "pytest", "python3 -m pytest -q"
+        return "pytest", command_from_args([sys.executable, "-m", "pytest", "-q"])
 
     py_files = _collect_python_files(cwd)
     if py_files:
         rels = sorted(str(path.relative_to(cwd)) for path in py_files)
-        joined = " ".join(shlex.quote(rel) for rel in rels)
-        return "py_compile", f"python3 -m py_compile {joined}"
+        return "py_compile", command_from_args([sys.executable, "-m", "py_compile", *rels])
 
     return "none", None
 
@@ -205,3 +207,17 @@ def _collect_python_files(cwd: Path) -> list[Path]:
         if len(collected) >= _MAX_COMPILE_FILES:
             break
     return collected
+
+
+def command_from_args(args: list[str]) -> str:
+    return subprocess.list2cmdline(args)
+
+
+def normalize_python_command(command: str) -> str:
+    if shutil.which("python3") is not None:
+        return command
+    return re.sub(
+        r"(?<![\w./\\-])python3(?![\w./\\-])",
+        lambda _match: command_from_args([sys.executable]),
+        command,
+    )

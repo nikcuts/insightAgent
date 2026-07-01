@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from insightagent.agent.core import CodeAgent
+from insightagent.agent.task_state import TaskState
 from insightagent.api.messages import Message, ModelResponse, ToolCall
 from insightagent.api.resilience import RetryPolicy
 from insightagent.runtime.tool_context import ToolContext
@@ -106,7 +107,7 @@ class SmallModelResilienceTests(unittest.TestCase):
             ]
         )
         with tempfile.TemporaryDirectory() as directory:
-            agent = _agent(Path(directory), model, max_tool_iterations=12)
+            agent = _agent(Path(directory), model, max_tool_iterations=12, task_state=TaskState(max_repairs=3))
             result = agent.run_turn_with_trace("write and run bug.py", trace=lambda _e: None)
 
         # Must NOT burn all iterations; should finalize with the model's text.

@@ -21,6 +21,8 @@ CODING_BASIC_TOOLS = frozenset(
         "git_diff",
         "todo_write",
         "lsp_diagnostics",
+        "parse_ast",
+        "get_function_signature",
     }
 )
 ANALYSIS_TOOLS = frozenset(

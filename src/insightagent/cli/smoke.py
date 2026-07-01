@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import os
+from pathlib import Path
 
 from ..agent.core import CodeAgent
 from ..api.providers import AnthropicClient, OpenAICompatibleClient
+from ..config import load_dotenv_files
 from ..tools import ToolRegistry
 
 
@@ -48,6 +50,7 @@ def build_agent(provider: str, model: str | None) -> CodeAgent:
 
 def main() -> None:
     args = build_parser().parse_args()
+    load_dotenv_files(Path.cwd(), start_dir=Path.cwd())
     agent = build_agent(args.provider, args.model)
     result = agent.run_turn(args.prompt)
     print(result.content)

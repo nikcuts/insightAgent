@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from insightagent.agent.core import CodeAgent
+from insightagent.agent.task_state import TaskState
 from insightagent.api.messages import ModelResponse, ToolCall
 from insightagent.api.resilience import RetryPolicy
 from insightagent.runtime.tool_context import ToolContext
@@ -284,6 +285,7 @@ def run_scenarios(resilience_enabled: bool = True) -> tuple[list[TrajectoryResul
                 require_tool_use=True,
                 max_tool_iterations=scenario.max_tool_iterations,
                 resilience_enabled=resilience_enabled,
+                task_state=TaskState(max_repairs=3) if scenario.id == "t11_unfixable" else None,
             )
             events: list[dict[str, Any]] = []
             result = agent.run_turn_with_trace(scenario.task, trace=events.append)

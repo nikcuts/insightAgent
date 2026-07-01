@@ -11,7 +11,7 @@ from typing import Any
 from insightagent.agent.core import CodeAgent
 from insightagent.api.messages import Message, ModelResponse, ToolCall
 from insightagent.api.providers import ModelClient
-from insightagent.agent.task_state import TaskPhase
+from insightagent.agent.task_state import TaskPhase, TaskState
 from insightagent.runtime.tool_context import ToolContext
 from insightagent.tools import ToolRegistry
 
@@ -125,6 +125,7 @@ class LongHorizonLifecycleTests(unittest.TestCase):
                 client,
                 tools=ToolRegistry(context=ToolContext(workspace=Path(directory))),
                 max_tool_iterations=20,
+                task_state=TaskState(max_repairs=3),
             )
 
             agent.run_turn("Build a tested calculator module")
@@ -162,6 +163,7 @@ class RepairEscalationTests(unittest.TestCase):
                 client,
                 tools=ToolRegistry(context=ToolContext(workspace=Path(directory))),
                 max_tool_iterations=20,
+                task_state=TaskState(max_repairs=3),
             )
             events: list[dict[str, Any]] = []
 
