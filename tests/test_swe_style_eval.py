@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import insightagent.evals.swe_style as swe_style
 
 from insightagent.evals.swe_style import (
     CaseRunResult,
@@ -13,7 +17,7 @@ from insightagent.evals.swe_style import (
     WorkspaceChanges,
     analyze_existing_run,
     analyze_workspace_changes,
-    build_agent_command,
+    build_subprocess_command,
     build_task_prompt,
     export_predictions,
     load_cases,
@@ -29,6 +33,67 @@ DATASET = ROOT / "tests" / "fixtures" / "swe_style" / "cases.jsonl"
 
 
 class SweStyleEvalTests(unittest.TestCase):
+    def test_cli_enables_subprocess_only_when_explicitly_requested(self) -> None:
+        captured: dict[str, object] = {}
+        case = SweStyleCase(
+            id="cli-subprocess",
+            source_dir=ROOT,
+            issue="unused",
+            test_command="true",
+        )
+
+        def fake_run_case(*args, **kwargs):  # noqa: ANN002, ANN003
+            captured.update(kwargs)
+            return SimpleNamespace(status="resolved", resolved=True)
+
+        with tempfile.TemporaryDirectory() as directory:
+            project_root = Path(directory)
+            with patch.object(sys, "argv", ["swe-style", "--subprocess"]):
+                with patch("insightagent.evals.swe_style.default_project_root", return_value=project_root):
+                    with patch("insightagent.evals.swe_style.load_dotenv_files"):
+                        with patch("insightagent.evals.swe_style.load_cases", return_value=[case]):
+                            with patch("insightagent.evals.swe_style.run_case", fake_run_case):
+                                with patch(
+                                    "insightagent.evals.swe_style.write_reports",
+                                    return_value=(project_root / "results.jsonl", project_root / "summary.md"),
+                                ):
+                                    with patch(
+                                        "insightagent.evals.swe_style.export_predictions",
+                                        return_value=project_root / "predictions.jsonl",
+                                    ):
+                                        swe_style.main()
+
+        self.assertTrue(captured["subprocess_mode"])
+        self.assertIsNone(captured["model"])
+
+    def test_fail_on_unresolved_ignores_non_evaluable_case_results(self) -> None:
+        case = SweStyleCase(
+            id="invalid-baseline",
+            source_dir=ROOT,
+            issue="unused",
+            test_command="true",
+        )
+
+        def fake_run_case(*args, **kwargs):  # noqa: ANN002, ANN003
+            return SimpleNamespace(status="invalid_environment", resolved=False)
+
+        with tempfile.TemporaryDirectory() as directory:
+            project_root = Path(directory)
+            with patch.object(sys, "argv", ["swe-style", "--fail-on-unresolved"]):
+                with patch("insightagent.evals.swe_style.default_project_root", return_value=project_root):
+                    with patch("insightagent.evals.swe_style.load_dotenv_files"):
+                        with patch("insightagent.evals.swe_style.load_cases", return_value=[case]):
+                            with patch("insightagent.evals.swe_style.run_case", fake_run_case):
+                                with patch(
+                                    "insightagent.evals.swe_style.write_reports",
+                                    return_value=(project_root / "results.jsonl", project_root / "summary.md"),
+                                ):
+                                    with patch(
+                                        "insightagent.evals.swe_style.export_predictions",
+                                        return_value=project_root / "predictions.jsonl",
+                                    ):
+                                        swe_style.main()
+
     def test_load_cases_resolves_relative_source_dirs(self) -> None:
         case = load_cases(DATASET)[0]
 
@@ -112,10 +177,10 @@ class SweStyleEvalTests(unittest.TestCase):
         self.assertIsNone(result.verification)
         self.assertNotEqual(result.baseline.exit_code, 0)
 
-    def test_agent_command_keeps_multiline_task_as_one_argument(self) -> None:
+    def test_subprocess_command_keeps_multiline_task_as_one_argument(self) -> None:
         case = load_cases(DATASET)[0]
         task = build_task_prompt(case)
-        command = build_agent_command(
+        command = build_subprocess_command(
             workspace=Path("workspace"),
             trace_path=Path("trace.jsonl"),
             task=task,
@@ -131,6 +196,7 @@ class SweStyleEvalTests(unittest.TestCase):
         task_index = command.index("--task")
         self.assertEqual(command[task_index + 1], task)
         self.assertIn("--no-trace", command)
+        self.assertEqual(command[:3], [command[0], "-m", "insightagent.cli.run_task"])
         self.assertIn("first tool call must inspect", task)
         self.assertIn(case.test_command, task)
 
@@ -162,8 +228,8 @@ class SweStyleEvalTests(unittest.TestCase):
     def test_test_modification_is_not_counted_as_resolved(self) -> None:
         case = load_cases(DATASET)[0]
 
-        def fake_run_process(command, cwd, timeout_seconds, env=None):  # noqa: ANN001
-            workspace = Path(command[command.index("--workspace") + 1])
+        def fake_run_task(**kwargs):  # noqa: ANN003
+            workspace = kwargs["workspace"]
             (workspace / "test_calc.py").write_text(
                 "import unittest\n\n"
                 "class CalculatorTests(unittest.TestCase):\n"
@@ -171,16 +237,14 @@ class SweStyleEvalTests(unittest.TestCase):
                 "        self.assertTrue(True)\n",
                 encoding="utf-8",
             )
-            return CommandResult(
-                command="fake-agent",
-                exit_code=0,
-                stdout="changed tests",
-                stderr="",
-                duration_seconds=0.0,
+            return SimpleNamespace(
+                final_answer="changed tests",
+                state={"phase": "done"},
+                trace_id="trace-test-change",
             )
 
         with tempfile.TemporaryDirectory() as directory:
-            with patch("insightagent.evals.swe_style.run_process", fake_run_process):
+            with patch("insightagent.evals.swe_style.graph_run_task", fake_run_task):
                 result = run_case(
                     case,
                     run_root=Path(directory) / "runs",
@@ -200,19 +264,17 @@ class SweStyleEvalTests(unittest.TestCase):
     def test_only_added_demo_file_is_classified_as_no_existing_source_patch(self) -> None:
         case = load_cases(DATASET)[0]
 
-        def fake_run_process(command, cwd, timeout_seconds, env=None):  # noqa: ANN001
-            workspace = Path(command[command.index("--workspace") + 1])
+        def fake_run_task(**kwargs):  # noqa: ANN003
+            workspace = kwargs["workspace"]
             (workspace / "addition.py").write_text("print('demo')\n", encoding="utf-8")
-            return CommandResult(
-                command="fake-agent",
-                exit_code=0,
-                stdout="created demo",
-                stderr="",
-                duration_seconds=0.0,
+            return SimpleNamespace(
+                final_answer="created demo",
+                state={"phase": "done"},
+                trace_id="trace-demo",
             )
 
         with tempfile.TemporaryDirectory() as directory:
-            with patch("insightagent.evals.swe_style.run_process", fake_run_process):
+            with patch("insightagent.evals.swe_style.graph_run_task", fake_run_task):
                 result = run_case(
                     case,
                     run_root=Path(directory) / "runs",
@@ -263,14 +325,20 @@ class SweStyleEvalTests(unittest.TestCase):
                 "+new\n"
                 "+added\n"
             ),
+            langfuse_trace_id="trace-summary",
+            trace_status="available",
         )
 
         summary = render_summary([result])
 
         self.assertIn("Trace", summary)
+        self.assertIn("Trace Status", summary)
+        self.assertIn("Langfuse Trace", summary)
         self.assertIn("Patch +", summary)
         self.assertIn("Patch -", summary)
         self.assertIn("`reports/swe_style/pallets__flask-5063.trace.jsonl`", summary)
+        self.assertIn("available", summary)
+        self.assertIn("trace-summary", summary)
         self.assertIn("| 2 | 1 |", summary)
 
     def test_invalid_pytest_collection_baseline_does_not_call_agent(self) -> None:
@@ -371,8 +439,8 @@ class SweStyleEvalTests(unittest.TestCase):
     def test_exports_swe_bench_predictions_jsonl(self) -> None:
         case = load_cases(DATASET)[0]
 
-        def fake_run_process(command, cwd, timeout_seconds, env=None):  # noqa: ANN001
-            workspace = Path(command[command.index("--workspace") + 1])
+        def fake_run_task(**kwargs):  # noqa: ANN003
+            workspace = kwargs["workspace"]
             (workspace / "calc.py").write_text(
                 "def calculate(left: int, operator: str, right: int) -> int:\n"
                 "    if operator == '+':\n"
@@ -384,16 +452,14 @@ class SweStyleEvalTests(unittest.TestCase):
                 "    raise ValueError(f\"unsupported operator: {operator}\")\n",
                 encoding="utf-8",
             )
-            return CommandResult(
-                command="fake-agent",
-                exit_code=0,
-                stdout="patched calc.py",
-                stderr="",
-                duration_seconds=0.0,
+            return SimpleNamespace(
+                final_answer="patched calc.py",
+                state={"phase": "done"},
+                trace_id="trace-patched",
             )
 
         with tempfile.TemporaryDirectory() as directory:
-            with patch("insightagent.evals.swe_style.run_process", fake_run_process):
+            with patch("insightagent.evals.swe_style.graph_run_task", fake_run_task):
                 result = run_case(
                     case,
                     run_root=Path(directory) / "runs",
@@ -427,6 +493,8 @@ def _case_result(
     agent: int | None = None,
     verification: int | None = None,
     patch: str = "",
+    langfuse_trace_id: str | None = None,
+    trace_status: str = "unavailable",
 ) -> CaseRunResult:
     changes = WorkspaceChanges(
         modified_files=[],
@@ -447,6 +515,8 @@ def _case_result(
         baseline=CommandResult("python -m pytest -q", baseline, "", "", 0.0),
         agent=None if agent is None else CommandResult("agent", agent, "", "", 0.0),
         verification=None if verification is None else CommandResult("python -m pytest -q", verification, "", "", 0.0),
+        langfuse_trace_id=langfuse_trace_id,
+        trace_status=trace_status,
     )
 
 

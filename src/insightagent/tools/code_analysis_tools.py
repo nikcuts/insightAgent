@@ -24,9 +24,7 @@ class ParseAstTool:
         object.__setattr__(self, "input_schema", _path_schema())
 
     def run(self, arguments: dict[str, Any]) -> str:
-        loaded = _load_python_source(self.context, str(arguments["path"]))
-        if loaded.error:
-            return loaded.error
+        loaded = _require_python_source(self.context, str(arguments["path"]))
         tree = loaded.tree
         assert tree is not None
         payload = {
@@ -66,9 +64,7 @@ class GetFunctionSignatureTool:
         function_name = str(arguments["function_name"])
         class_name = arguments.get("class_name")
         class_name = str(class_name) if class_name else None
-        loaded = _load_python_source(self.context, str(arguments["path"]))
-        if loaded.error:
-            return loaded.error
+        loaded = _require_python_source(self.context, str(arguments["path"]))
         tree = loaded.tree
         assert tree is not None
         matches = [
@@ -100,9 +96,7 @@ class FindDependenciesTool:
         object.__setattr__(self, "input_schema", _path_schema())
 
     def run(self, arguments: dict[str, Any]) -> str:
-        loaded = _load_python_source(self.context, str(arguments["path"]))
-        if loaded.error:
-            return loaded.error
+        loaded = _require_python_source(self.context, str(arguments["path"]))
         tree = loaded.tree
         assert tree is not None
         local_modules = _local_module_names(self.context.workspace)
@@ -134,9 +128,7 @@ class GetCodeMetricsTool:
         object.__setattr__(self, "input_schema", _path_schema())
 
     def run(self, arguments: dict[str, Any]) -> str:
-        loaded = _load_python_source(self.context, str(arguments["path"]))
-        if loaded.error:
-            return loaded.error
+        loaded = _require_python_source(self.context, str(arguments["path"]))
         tree = loaded.tree
         assert tree is not None
         lines = loaded.source.splitlines()
@@ -188,6 +180,17 @@ def _load_python_source(context: ToolContext, raw_path: str) -> LoadedPythonSour
     except SyntaxError as error:
         return LoadedPythonSource(path, rel, source, None, f"{rel}: SyntaxError: {error}")
     return LoadedPythonSource(path, rel, source, tree)
+
+
+def _require_python_source(context: ToolContext, raw_path: str) -> LoadedPythonSource:
+    loaded = _load_python_source(context, raw_path)
+    if loaded.error is None:
+        return loaded
+    if loaded.error.startswith(("file does not exist:", "path is not a file:")):
+        raise FileNotFoundError(loaded.error)
+    if "SyntaxError:" in loaded.error:
+        raise SyntaxError(loaded.error)
+    raise ValueError(loaded.error)
 
 
 def _extract_imports(tree: ast.AST) -> list[dict[str, Any]]:

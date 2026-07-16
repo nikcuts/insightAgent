@@ -44,6 +44,8 @@ class FailureClassifier:
     environment_patterns = (
         r"command not found",
         r"no such file or directory",
+        r"file does not exist",
+        r"path is not a file",
         r"cannot open file",
         r"module not found",
         r"modulenotfounderror",

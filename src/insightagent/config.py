@@ -17,6 +17,9 @@ class RuntimeConfig:
     timeout: int = 300
     max_tool_iterations: int = 12
     max_output_tokens: int = 4096
+    temperature: float = 0.01
+    top_p: float = 0.95
+    max_retries: int = 3
     max_wall_seconds: float = 0.0
     max_tool_output_chars: int = 8000
     compact_tool_output_chars: int = 600
@@ -40,7 +43,11 @@ def load_runtime_config(
     overrides: dict[str, Any] | None = None,
 ) -> RuntimeConfig:
     workspace_path = Path(workspace).expanduser().resolve()
-    home = Path(user_config_home).expanduser() if user_config_home else Path.home() / ".insightagent"
+    home = (
+        Path(user_config_home).expanduser()
+        if user_config_home
+        else Path.home() / ".insightagent"
+    )
     candidate_paths = [
         home / "config.json",
         workspace_path / ".insightagent" / "config.json",
@@ -82,7 +89,9 @@ def load_dotenv_files(
     return tuple(loaded)
 
 
-def _config_from_dict(data: dict[str, Any], loaded_files: tuple[str, ...]) -> RuntimeConfig:
+def _config_from_dict(
+    data: dict[str, Any], loaded_files: tuple[str, ...]
+) -> RuntimeConfig:
     config = RuntimeConfig(loaded_files=loaded_files)
     runtime = _object_or_empty(data.get("runtime"))
     model = _object_or_empty(data.get("model"))
@@ -95,11 +104,24 @@ def _config_from_dict(data: dict[str, Any], loaded_files: tuple[str, ...]) -> Ru
         "model": model.get("name", flat_model_name),
         "base_url": model.get("base_url", data.get("base_url")),
         "timeout": runtime.get("timeout", data.get("timeout")),
-        "max_tool_iterations": runtime.get("max_tool_iterations", data.get("max_tool_iterations")),
-        "max_output_tokens": runtime.get("max_output_tokens", data.get("max_output_tokens")),
-        "max_wall_seconds": runtime.get("max_wall_seconds", data.get("max_wall_seconds")),
-        "max_tool_output_chars": runtime.get("max_tool_output_chars", data.get("max_tool_output_chars")),
-        "compact_tool_output_chars": runtime.get("compact_tool_output_chars", data.get("compact_tool_output_chars")),
+        "max_tool_iterations": runtime.get(
+            "max_tool_iterations", data.get("max_tool_iterations")
+        ),
+        "max_output_tokens": runtime.get(
+            "max_output_tokens", data.get("max_output_tokens")
+        ),
+        "temperature": runtime.get("temperature", data.get("temperature")),
+        "top_p": runtime.get("top_p", data.get("top_p")),
+        "max_retries": runtime.get("max_retries", data.get("max_retries")),
+        "max_wall_seconds": runtime.get(
+            "max_wall_seconds", data.get("max_wall_seconds")
+        ),
+        "max_tool_output_chars": runtime.get(
+            "max_tool_output_chars", data.get("max_tool_output_chars")
+        ),
+        "compact_tool_output_chars": runtime.get(
+            "compact_tool_output_chars", data.get("compact_tool_output_chars")
+        ),
         "permission_mode": permissions.get("mode", data.get("permission_mode")),
         "trace_max_chars": tracing.get("max_chars", data.get("trace_max_chars")),
         "session_dir": sessions.get("dir", data.get("session_dir")),
@@ -179,6 +201,9 @@ def _normalize_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
             "timeout",
             "max_tool_iterations",
             "max_output_tokens",
+            "temperature",
+            "top_p",
+            "max_retries",
             "max_wall_seconds",
             "max_tool_output_chars",
             "compact_tool_output_chars",
@@ -186,7 +211,9 @@ def _normalize_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
         }:
             normalized = _deep_merge(normalized, {"runtime": {key: value}})
         elif key == "language":
-            normalized = _deep_merge(normalized, {"runtime": {"response_language": value}})
+            normalized = _deep_merge(
+                normalized, {"runtime": {"response_language": value}}
+            )
         elif key == "permission_mode":
             normalized = _deep_merge(normalized, {"permissions": {"mode": value}})
         elif key == "trace_max_chars":

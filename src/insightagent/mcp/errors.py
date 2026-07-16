@@ -1,6 +1,8 @@
-"""MCP-specific errors."""
+"""MCP configuration errors."""
 
 from __future__ import annotations
+
+from collections.abc import Iterable
 
 
 class MCPError(Exception):
@@ -11,17 +13,9 @@ class MCPConfigError(MCPError):
     """Raised when MCP configuration is invalid."""
 
 
-class MCPTransportError(MCPError):
-    """Raised when MCP transport startup or I/O fails."""
+class MCPStartupError(MCPConfigError):
+    """Raised when a server selected for this run cannot be started."""
 
-
-class MCPProtocolError(MCPError):
-    """Raised when JSON-RPC or MCP protocol handling fails."""
-
-
-class MCPRequestTimeout(MCPTransportError):
-    """Raised when an MCP request times out."""
-
-
-class MCPToolError(MCPError):
-    """Raised when an MCP tool call returns an error."""
+    def __init__(self, server_names: Iterable[str]) -> None:
+        names = sorted({name for name in server_names if name})
+        super().__init__(f"MCP server startup failed: {', '.join(names) or 'unknown'}")

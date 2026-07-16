@@ -135,7 +135,10 @@ class SweBenchLitePrepareTests(unittest.TestCase):
                 clone_from_local=local_source,
             )
 
-        self.assertEqual(commands[0][0], ["git", "clone", str(local_source), commands[0][0][-1]])
+        self.assertEqual(
+            commands[0][0],
+            ["git", "clone", str(local_source.resolve()), commands[0][0][-1]],
+        )
 
     def test_build_verification_command_handles_empty_fail_to_pass(self) -> None:
         self.assertEqual(build_verification_command({"FAIL_TO_PASS": "[]"}), "python -m pytest -q")

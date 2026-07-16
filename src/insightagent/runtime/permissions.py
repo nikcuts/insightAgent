@@ -20,6 +20,12 @@ class PermissionEnforcer:
                 required_permission=spec.required_permission,
                 reason=f"{spec.name} requires workspace-write permission but runtime is read-only",
             )
+        if spec.required_permission == ToolPermission.MCP and not context.can_write:
+            return PermissionDecision(
+                allowed=False,
+                required_permission=spec.required_permission,
+                reason=f"{spec.name} is not declared read-only and runtime is read-only",
+            )
         if spec.required_permission == ToolPermission.EXECUTE:
             command = str(arguments.get("command", ""))
             decision = self.command_validator.validate(command, context.permission_mode)

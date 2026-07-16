@@ -1,59 +1,47 @@
-"""Real-provider smoke test for InsightAgent V5.0."""
+"""One-shot smoke entry point using the production LangGraph runner."""
 
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 
-from ..agent.core import CodeAgent
-from ..api.providers import AnthropicClient, OpenAICompatibleClient
-from ..config import load_dotenv_files
-from ..tools import ToolRegistry
-
-
-SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
-SILICONFLOW_DEFAULT_MODEL = "Qwen/Qwen2.5-72B-Instruct"
+from insightagent.config import load_dotenv_files, load_runtime_config
+from insightagent.graph.runner import run_task
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run a one-shot real-provider smoke test.")
-    parser.add_argument(
-        "--provider",
-        choices=["openai", "anthropic", "siliconflow"],
-        default="siliconflow",
-    )
-    parser.add_argument("--model", help="Override provider model.")
-    parser.add_argument(
-        "--prompt",
-        default="Reply with exactly: pong",
-        help="Prompt for the one-shot smoke test.",
-    )
+    parser = argparse.ArgumentParser(description="Run a one-shot real-provider graph smoke test.")
+    parser.add_argument("--provider", choices=["openai", "anthropic", "siliconflow"])
+    parser.add_argument("--model", help="Override MODEL_ID for this invocation.")
+    parser.add_argument("--workspace", default=".")
+    parser.add_argument("--prompt", default="Reply with exactly: pong")
     return parser
-
-
-def build_agent(provider: str, model: str | None) -> CodeAgent:
-    if provider == "anthropic":
-        return CodeAgent(AnthropicClient(model=model))
-    if provider == "siliconflow":
-        api_key = os.environ.get("SILICONFLOW_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        return CodeAgent(
-            OpenAICompatibleClient(
-                api_key=api_key,
-                model=model or os.environ.get("SILICONFLOW_MODEL", SILICONFLOW_DEFAULT_MODEL),
-                base_url=os.environ.get("SILICONFLOW_BASE_URL", SILICONFLOW_BASE_URL),
-            ),
-            tools=ToolRegistry([]),
-        )
-    return CodeAgent(OpenAICompatibleClient(model=model))
 
 
 def main() -> None:
     args = build_parser().parse_args()
-    load_dotenv_files(Path.cwd(), start_dir=Path.cwd())
-    agent = build_agent(args.provider, args.model)
-    result = agent.run_turn(args.prompt)
-    print(result.content)
+    workspace = Path(args.workspace).expanduser().resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
+    load_dotenv_files(workspace, start_dir=Path.cwd())
+    config = load_runtime_config(
+        workspace,
+        overrides={"provider": args.provider, "model": args.model},
+    )
+    outcome = run_task(
+        task=args.prompt,
+        workspace=workspace,
+        config=config,
+        session_id=None,
+        checkpoint_id=None,
+        tool_profile="analysis",
+        allowed_tools=None,
+        enabled_mcp_servers=set(),
+        trace_jsonl=None,
+        no_trace=True,
+    )
+    print(outcome.final_answer)
+    if outcome.state.get("phase") != "done":
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

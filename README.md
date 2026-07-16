@@ -1,426 +1,131 @@
 # InsightAgent V5.0
 
-InsightAgent V5.0 将前几个版本的原型推进为一个小而完整的 coding-agent runtime。
+InsightAgent 的唯一生产运行时是 LangGraph。LangChain 负责聊天模型和工具抽象，Langfuse 负责模型、图节点和工具决策的可观测性。项目不再保留手写 agent 循环、供应商客户端、JSON 会话或旧追踪器作为兼容执行路径。
 
-前序版本保留用于对比：
+## 环境配置
 
-- `/home/dinghanchen/stuckin/insightagent`：V1.0 基础循环
-- `/home/dinghanchen/stuckin/insightagent_v2`：memory 注入、截断、微型压缩
-- `/home/dinghanchen/stuckin/insightagent_v3`：ToolContext、workspace 安全边界、权限、`edit_file`
-- `/home/dinghanchen/stuckin/insightagent_v4`：`grep_search`、self-healing repair prompt
-- `/home/dinghanchen/stuckin/insightagent_v5`：runtime 系统
+在启动目录或目标工作区创建 `.env`。运行时只使用统一模型变量：
 
-V5.0 参考了 `/home/dinghanchen/stuckin/claw-code-parity` 的 runtime 结构，尤其是配置加载、session 持久化、上下文压缩、用量统计、CLI 命令和 parity-harness 思路。
+```bash
+API_KEY=...
+BASE_URL=https://api.siliconflow.cn/v1
+MODEL_ID=Qwen/Qwen3.6-35B-A3B
 
-## V5 新增能力
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_SECRET_KEY=
+LANGFUSE_BASE_URL=
+```
 
-V5.0 保留 V4 的全部行为，并新增：
+`API_KEY`、`BASE_URL`、`MODEL_ID` 分别是访问凭据、兼容 OpenAI API 的地址和模型标识。`--model` 与项目配置可覆盖 `MODEL_ID`，否则使用环境变量。不要配置或依赖供应商专有环境变量。
 
-- runtime 配置加载和优先级合并
-- session 创建、持久化、恢复、列表查询和 transcript 导出
-- 每次模型调用的用量估算
-- slash command dispatcher
-- 交互式 CLI，支持 `/status`、`/cost`、`/memory`、`/compact`、`/clear`、`/permissions`、`/export`
-- 带 session 和 config 集成的 `run_task`
-- 任务生命周期状态机：`plan -> implement -> verify -> repair -> summarize`
-- 结构化工具 package，以及 Python 代码分析工具：`parse_ast`、`get_function_signature`、`find_dependencies`、`get_code_metrics`
-- MCP Runtime Layer：支持 `stdio`、`streamable_http`、MCP tools/resources/prompts 和 `/mcp` CLI 状态命令
+`.env` 按启动目录、工作区的顺序加载，且不会覆盖已经导出的 shell 变量。Langfuse 变量可选；未配置时图继续运行，只是不发送远程观测。
 
-这是第一个真正像“有状态 runtime”的版本，不再只是一次性 demo script。
+## 非交互任务
 
-## 架构
+```bash
+uv run insightagent-run \
+  --workspace /path/to/repository \
+  --session-id repair-001 \
+  --task "修复失败的测试并运行验证命令"
+```
+
+常用参数：
 
 ```text
-config.py          # 用户/项目/local/CLI 配置合并
-session.py         # JSON session 存储和 Markdown transcript 导出
-task_state.py      # plan/implement/verify/repair/summarize 生命周期
-usage.py           # token/cost-ish 用量估算
-slash_commands.py  # slash command dispatcher
-agent.py           # 带 usage 和 session sync 的 agent loop
-run_task.py        # 非交互式任务 runner
-cli.py             # 交互式 REPL
-mcp/               # MCP config、protocol、transport、client、manager、adapter
-  config.py
-  protocol.py
-  transports.py
-  client.py
-  manager.py
-  adapters.py
-tools/             # execution、file、search、state、code-analysis 工具
-  base.py
-  execution_tools.py
-  file_tools.py
-  search_tools.py
-  state_tools.py
-  code_analysis_tools.py
-  registry.py
+--tool-profile coding-basic|analysis|all|mcp-playwright|mcp-github
+--allowed-tools read_file,grep_search
+--enable-mcp-server playwright
+--permission-mode read-only|workspace-write
+--max-wall-seconds 300
+--max-tool-iterations 12
+--trace-jsonl reports/repair.jsonl
+--trace-max-chars 1000
+--no-trace
 ```
 
-V5 流程：
+`--no-trace` 只关闭控制台事件渲染，不会关闭 JSONL 调试导出或 Langfuse。`--trace-max-chars`（或配置中的 `tracing.max_chars`）限制 Langfuse、JSONL 和控制台单个文本字段的长度。JSONL 是经脱敏的图事件导出，包含阶段、工具事件、验证记录、最终状态和可用的 Langfuse trace ID。
+
+图在工具执行后先按 `runtime.max_tool_output_chars` 截断模型可见结果，再在下一次模型调用前按 `runtime.compact_tool_output_chars` 压缩历史工具结果，并裁剪完整的历史消息组；不会留下没有对应工具调用的 `ToolMessage`。
+
+配置、模型凭据、工具 profile 或 MCP server 错误退出码为 `2`；图以 `failed` 终止时退出码为 `1`。
+
+## 会话与检查点
+
+LangGraph SQLite 检查点是会话事实来源。默认数据库位于：
 
 ```text
-加载配置
--> 创建或恢复 session
--> 加载项目 memory
--> 按 tool profile 选择内置工具和显式启用的 MCP servers
--> 组装 system prompt
--> 运行模型/工具循环
--> 注入阶段指导并跟踪任务生命周期
--> 记录每次模型调用的用量
--> 持久化 messages 和 metadata
--> 支持 slash command 检查、导出和压缩
+<workspace>/.insightagent/sessions/checkpoints.sqlite3
 ```
 
-## Runtime Harness
-
-当前版本把参考工程 `/home/dinghanchen/stuckin/claw-code-parity` 的 harness 思路改编为 Python 运行时：
-
-- `insightagent/runtime/types.py`：定义 `ToolSpec`、权限、风险等级和结构化 `ToolExecutionResult`
-- `insightagent/runtime/permissions.py`：在工具执行前统一做权限裁决
-- `insightagent/runtime/command_validation.py`：识别 shell 命令意图，例如 test、build、install、network、mutating、destructive
-- `insightagent/runtime/failure_classifier.py`：把失败归类为 code/test/environment/network/permission/timeout 等类型
-- `ToolRegistry.execute()`：模型工具调用统一经过 spec、permission、command validation、failure classification 和重复失败熔断
-- `JsonlTraceRecorder`：可把每次运行的结构化事件写成 JSONL，供后续统计轨迹成功率和失败类型
-
-非重试型失败，例如网络不可达、环境缺失、权限拒绝，会被标记为不可重复重试；同一个失败工具调用再次出现时，runtime 会直接抑制重复调用并把原因写入 trace。
-
-## 配置
-
-配置优先级：
-
-```text
-~/.insightagent/config.json
-<workspace>/.insightagent/config.json
-<workspace>/.insightagent/local.json
-CLI 参数
-```
-
-项目配置示例：
-
-```json
-{
-  "model": {
-    "provider": "siliconflow",
-    "name": "Qwen/Qwen2.5-72B-Instruct",
-    "base_url": "https://api.siliconflow.cn/v1"
-  },
-  "runtime": {
-    "timeout": 300,
-    "max_tool_iterations": 12,
-    "max_tool_output_chars": 8000,
-    "compact_tool_output_chars": 600
-  },
-  "permissions": {
-    "mode": "workspace-write"
-  },
-  "tracing": {
-    "max_chars": 1000
-  },
-  "sessions": {
-    "dir": ".insightagent/sessions"
-  }
-}
-```
-
-local 配置用于机器本地覆盖，不应包含需要共享的密钥。
-
-## MCP 配置
-
-MCP 配置单独存放。非交互式 `run_task` 和交互式 `cli` 都会记录启动命令时所在目录，并按下面顺序读取 MCP 配置。后读取的同名 server 会覆盖先读取的字段：
-
-```text
-~/.insightagent/mcp_config.json
-<start_dir>/.insightagent/mcp_config.json
-<start_dir>/mcp_config.json
-<workspace>/.insightagent/mcp_config.json
-<workspace>/mcp_config.json
-```
-
-这样从项目根目录启动、但把 `--workspace` 指到 `workspaces/<task>` 这类临时工作区时，也能加载项目根目录的 `mcp_config.json`，不需要再把配置复制到每个 workspace 里。读取配置不等于启动 MCP server；默认 `--tool-profile coding-basic` 只暴露核心内置工具。
-
-示例见 [mcp_config.json.example](mcp_config.json.example)。
-
-```json
-{
-  "mcpServers": {
-    "playwright": {
-      "transport": "stdio",
-      "command": "npx",
-      "args": ["@playwright/mcp@latest"],
-      "enabled": true,
-      "tool_prefix": "mcp_playwright"
-    }
-  }
-}
-```
-
-MCP tool 会按 `<prefix>_<tool>` 暴露给模型，例如 `mcp_playwright_navigate`。MCP resources 和 prompts 会通过 `<prefix>_list_resources`、`<prefix>_read_resource`、`<prefix>_list_prompts`、`<prefix>_get_prompt` 暴露。
-
-需要 MCP 时显式选择：
+可用 `--session-dir` 改写目录。一个 `--session-id` 对应图线程；在同一线程继续任务会保留历史消息，但重置本轮阶段字段。
 
 ```bash
-python3 -m insightagent.cli.run_task \
-  --tool-profile mcp-playwright \
-  --trace-jsonl reports/mcp_tools_trace.jsonl \
-  --workspace workspaces/mcp_tools \
-  --task "使用 Playwright MCP 打开 https://example.com 并总结页面标题。"
+# 列出线程，不启动模型或 MCP
+uv run insightagent-run --workspace /path/to/repository --list-sessions
+
+# 查看指定检查点，不启动模型或 MCP
+uv run insightagent-run \
+  --workspace /path/to/repository \
+  --session-id repair-001 \
+  --checkpoint-id <checkpoint-id>
+
+# 导出当前线程或指定检查点的 Markdown 转录
+uv run insightagent-run \
+  --workspace /path/to/repository \
+  --session-id repair-001 \
+  --export-transcript reports/repair-001.md
 ```
 
-也可以用 `--enable-mcp-server github` 或 `--enable-mcp-server all` 只对本次运行启用指定配置。`--allowed-tools read_file,grep_search` 可在当前 profile 内进一步收窄内置工具集合。
-
-详细说明见 [MCP_GUIDE.md](MCP_GUIDE.md)。
-
-## 环境变量
-
-`run_task` 和 `cli` 会自动读取启动目录和 workspace 下的 `.env` 文件。读取规则是：
-
-- 先读取 `<start_dir>/.env`，再读取 `<workspace>/.env`
-- 只填充当前环境里还不存在的变量，不覆盖 shell 中已经 export 的变量
-- `.env` 已被 `.gitignore` 忽略，避免误提交密钥
-
-SiliconFlow：
-
-```bash
-export SILICONFLOW_API_KEY="..."
-export SILICONFLOW_BASE_URL="https://api.siliconflow.cn/v1"
-export SILICONFLOW_MODEL="Qwen/Qwen2.5-72B-Instruct"
-```
-
-OpenAI-compatible：
-
-```bash
-export OPENAI_API_KEY="..."
-export OPENAI_BASE_URL="https://api.openai.com/v1"
-export OPENAI_MODEL="gpt-4o-mini"
-```
-
-Anthropic：
-
-```bash
-export ANTHROPIC_API_KEY="..."
-export ANTHROPIC_MODEL="claude-sonnet-4-20250514"
-```
-
-不要把 API key 写死在源码、提交到 Git 的配置、README 示例或共享日志里。
-
-## 非交互式使用
-
-```bash
-cd /home/dinghanchen/stuckin/insightagent_v5
-
-python3 -m insightagent.cli.run_task \
-  --provider siliconflow \
-  --model "Qwen/Qwen2.5-72B-Instruct" \
-  --timeout 300 \
-  --workspace workspaces/card_war \
-  --permission-mode workspace-write \
-  --export-transcript workspaces/card_war/transcript.md \
-  --task "请创建一个 Python 纸牌游戏 card_war.py。先给 plan，写文件，运行 python3 -m py_compile card_war.py 和 python3 card_war.py。如果出现错误，请自动修复并重新验证。最后总结。"
-```
-
-trace 开头会包含 session 信息：
-
-```text
---- SESSION ---
-id=<session_id>
-dir=<workspace>/.insightagent/sessions
-config_files=...
-```
-
-列出 sessions：
-
-```bash
-python3 -m insightagent.cli.run_task --workspace workspaces/card_war --list-sessions
-```
-
-恢复 session：
-
-```bash
-python3 -m insightagent.cli.run_task \
-  --workspace workspaces/card_war \
-  --session-id <session_id> \
-  --task "继续上一个任务，检查当前文件并总结状态。"
-```
+`--checkpoint-id` 必须与 `--session-id` 一起使用。导出指定检查点时同样传入两者。
 
 ## 交互式 CLI
 
 ```bash
-python3 -m insightagent.cli \
-  --provider siliconflow \
-  --model "Qwen/Qwen2.5-72B-Instruct" \
-  --workspace workspaces/card_war
+uv run insightagent --workspace /path/to/repository --session-id repair-001
 ```
 
-Slash commands：
+交互式进程在 REPL 外创建一个长期 `GraphRunner`，每轮复用检查点、MCP 与模型资源，退出时才关闭它们。
 
 ```text
-/help
 /status
 /cost
 /memory
 /compact
 /clear
 /permissions
-/export transcript.md
+/export [path]
 /mcp status
 /mcp tools
 /mcp restart <server>
 /mcp refresh <server>
 ```
 
-## Session 存储
+`/mcp restart` 和 `/mcp refresh` 会重建工具表和模型绑定；下一轮图不会调用旧 MCP 工具实例。
 
-Session 以 JSON 保存：
+## MCP
 
-```text
-<workspace>/.insightagent/sessions/<session_id>.json
-```
+MCP 配置见 [MCP_GUIDE.md](MCP_GUIDE.md)。默认 `coding-basic` 不启动 MCP。选择 MCP profile 或传入 `--enable-mcp-server` 后，官方 `langchain-mcp-adapters` 和 MCP SDK 负责协议与传输。
 
-每个 session 记录：
+内置工具和 MCP 工具都经过同一权限、工作区、任务契约和剩余时间预算策略。MCP 调用超时或取消时，运行时会等待调用任务与会话结束；无法确认取消会记录为失败，不会伪报成功。
 
-- session id
-- created/updated 时间戳
-- metadata
-- messages
-- assistant tool calls
-- tool results
-- 用量估算
+## SWE 风格评测
 
-支持通过命令行导出 Markdown transcript：
+评测默认在当前进程直接调用图运行器，并总是在图失败、超时或异常后继续执行外部验证、分析部分改动和生成报告：
 
 ```bash
---export-transcript path/to/transcript.md
+uv run python -m insightagent.evals.swe_style \
+  --dataset tests/fixtures/swe_style/cases.jsonl \
+  --run-id local-eval
 ```
 
-也支持交互式导出：
+评测默认从 `.env` 使用 `API_KEY`、`BASE_URL`、`MODEL_ID`。`--subprocess` 是显式隔离选项，运行 `python -m insightagent.cli.run_task`，仍由图驱动。`--fail-on-unresolved` 只在存在未解决的可评测 case 时返回 `1`。
 
-```text
-/export transcript.md
-```
-
-## 当前限制
-
-V5.0 已经明显不像 V1-V4 那样偏 demo，但还不是完整 Claude Code 替代品：
-
-- token 用量是按字符估算，不是 provider tokenizer 的精确结果
-- session 存储基于 JSON 文件，不支持并发或数据库级管理
-- `/compact` 使用 deterministic structural summary，不是 LLM-generated summary
-- slash command 有用，但还不是完整 terminal UI
-- hook system 尚未实现
-- mock parity harness 尚未实现
-- LSP diagnostics 只是本地语法检查的 best-effort 版本，不是持久 language-server session
-- MCP 已支持基础 runtime layer 和真实 Playwright MCP smoke 路径，但第三方 server 的可用性仍取决于本机 Node/npm、网络、远程服务和 server 自身行为
-- plugins 和 sub-agent orchestration 仍是后续工作
-
-## 测试
+## 验证
 
 ```bash
-python -m compileall src tests
-python -m unittest discover -s tests -v
+uv sync --extra dev
+uv run python -m compileall src tests
+uv run pytest -q
+uv run python -c "import langgraph, langchain_core, langfuse"
+git diff --check
 ```
-
-期望结果：
-
-```text
-Ran 142 tests
-OK
-```
-
-## SWE-style 评测
-
-本地 SWE-bench 风格评测使用“基线测试失败、Agent 修改后同一验证命令通过”作为 resolved 标准。runner 会自动读取仓库 `.env`，复用 `insightagent.cli.run_task` 的 provider/model 配置。
-
-无 API dry-run：
-
-```bash
-python -m insightagent.evals.swe_style --dry-run --limit 1
-```
-
-使用 SiliconFlow + Qwen 真实模型：
-
-```bash
-python -m insightagent.evals.swe_style \
-  --provider siliconflow \
-  --model "Qwen/Qwen2.5-72B-Instruct" \
-  --limit 1 \
-  --run-id qwen-local
-```
-
-当前真实复现证据：
-
-- `reports/swe_style/qwen-local-20260701-r3/summary.md`：能修改源码但验证失败，暴露写后读缓存失效问题；
-- `reports/swe_style/qwen-local-20260701-r4/summary.md`：写后重读已恢复，但 repair budget 过小导致提前失败；
-- `reports/swe_style/qwen-local-20260701-r5/summary.md`：同一 Qwen 模型、同一 case resolved，baseline 失败、只修改 `calc.py`、指定验证命令通过。
-
-结果写入 `reports/swe_style/<run-id>/results.jsonl` 和 `reports/swe_style/<run-id>/summary.md`，每个 case 的运行 workspace 保存在 `workspaces/evals/swe_style/<run-id>/`。报告会列出 source changes、test changes 和 added files；如果最终验证通过但修改了测试，状态会标记为 `invalid_test_modified`，不会计入 resolved。
-
-如果需要在不再次调用模型的情况下复盘已有运行：
-
-```bash
-python -m insightagent.evals.swe_style --analyze-run qwen-local-20260701
-```
-
-`results.jsonl` 会包含 unified diff patch 和 failure mode，用于区分 `resolved`、`only_added_files`、`test_modified`、`no_patch`、`verification_failed` 等常见 SWE-bench 失败模式。每次运行还会写出 `predictions.jsonl`，字段为 `instance_id`、`model_name_or_path`、`model_patch`，便于后续接官方 harness。
-
-也可以读取本地 SWE-bench/Lite 风格 JSONL。字段支持 `instance_id`、`problem_statement`、`verification_command`、`repo`、`base_commit`、`FAIL_TO_PASS`；如果 JSONL 不含 `source_dir`，则通过 `--checkout-root/<sanitized-instance-id>` 定位本地 checkout。
-
-Agent 运行时会识别 SWE-style 任务契约，并在工具执行前阻止几类常见假阳性路径：
-
-- 在检查仓库前直接写文件；
-- 修改测试文件来获得通过结果；
-- 只新增 standalone/demo 文件后就验证；
-- 使用 `run_verification` 或 `execute_command` 跑了非指定验证命令。
-
-对于 SWE-style 仓库修复任务，Agent 首轮还会自动注入一个结构化 repository snapshot。该 snapshot 只包含仓库文件路径，不包含文件内容，并过滤 `.env`、私钥和证书类敏感文件名；它用于帮助模型选择 `read_file`、`grep_search`、`glob_search` 等检查动作，不替代实际读文件。
-
-```bash
-python -m insightagent.evals.swe_style \
-  --dataset path/to/swebench-lite-local.jsonl \
-  --checkout-root workspaces/swebench_checkouts \
-  --dry-run \
-  --limit 1
-```
-
-如果需要指定 predictions 文件中的模型名：
-
-```bash
-python -m insightagent.evals.swe_style \
-  --dataset path/to/swebench-lite-local.jsonl \
-  --checkout-root workspaces/swebench_checkouts \
-  --prediction-model-name InsightAgent-Qwen2.5-72B
-```
-
-测试覆盖：
-
-- agent loop
-- 任务生命周期状态转移
-- self-healing repair prompt
-- config merge 优先级
-- 项目 memory 注入
-- tool output 截断和压缩
-- provider message 转换
-- session 保存、加载和导出
-- slash command 行为
-- MCP config、protocol、stdio/http transport、client、manager、adapter 和 `/mcp` 命令
-- workspace permission checks
-- `edit_file`
-- `grep_search`
-- `glob_search`
-- `git_status` 和 `git_diff`
-- `todo_write`
-- best-effort `lsp_diagnostics`
-- Python 代码分析工具：`parse_ast`、`get_function_signature`、`find_dependencies`、`get_code_metrics`
-- 用量估算
-
-## 下一步工作
-
-下一阶段建议推进 **V6.0: Hooks + Audit + Parity Harness**：
-
-- `pre_tool_use`
-- `post_tool_use`
-- `post_tool_failure`
-- structured audit log
-- deterministic fake-model scenario runner
-- 覆盖 write allowed/denied、grep、repair、compaction、resume 的 parity scenarios
-
-这会让 InsightAgent 更接近 `claw-code-parity` 的工程形态。

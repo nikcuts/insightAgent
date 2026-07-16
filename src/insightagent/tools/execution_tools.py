@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
-import shlex
 import shutil
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -15,6 +16,9 @@ from typing import Any
 
 from ..runtime.tool_context import ToolContext
 from .base import should_skip_path
+
+
+_PROCESS_TERMINATION_GRACE_SECONDS = 0.2
 
 
 @dataclass(frozen=True)
@@ -31,7 +35,10 @@ class ExecuteCommandTool:
             {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "Shell command to run."},
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command to run.",
+                    },
                     "cwd": {
                         "type": "string",
                         "description": "Optional working directory. Defaults to current process directory.",
@@ -47,18 +54,22 @@ class ExecuteCommandTool:
         )
 
     def run(self, arguments: dict[str, Any]) -> str:
+        return self._run(arguments, turn_timeout=None)
+
+    def run_with_turn_timeout(
+        self, arguments: dict[str, Any], turn_timeout: float | None
+    ) -> str:
+        return self._run(arguments, turn_timeout=turn_timeout)
+
+    def _run(self, arguments: dict[str, Any], turn_timeout: float | None) -> str:
         command = normalize_python_command(str(arguments["command"]))
         self.context.check_bash_allowed(command)
-        cwd = self.context.resolve_workspace_path(str(arguments.get("cwd") or self.context.workspace))
+        cwd = self.context.resolve_workspace_path(
+            str(arguments.get("cwd") or self.context.workspace)
+        )
         timeout = int(arguments.get("timeout", 60))
-        completed = subprocess.run(
-            command,
-            shell=True,
-            cwd=str(cwd),
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
+        completed = run_shell_command(
+            command, cwd, _effective_timeout(timeout, turn_timeout)
         )
         return (
             f"exit_code: {completed.returncode}\n"
@@ -119,7 +130,17 @@ class RunVerificationTool:
         )
 
     def run(self, arguments: dict[str, Any]) -> str:
-        cwd = self.context.resolve_workspace_path(str(arguments.get("cwd") or self.context.workspace))
+        return self._run(arguments, turn_timeout=None)
+
+    def run_with_turn_timeout(
+        self, arguments: dict[str, Any], turn_timeout: float | None
+    ) -> str:
+        return self._run(arguments, turn_timeout=turn_timeout)
+
+    def _run(self, arguments: dict[str, Any], turn_timeout: float | None) -> str:
+        cwd = self.context.resolve_workspace_path(
+            str(arguments.get("cwd") or self.context.workspace)
+        )
         explicit = arguments.get("command")
         if explicit:
             strategy = "explicit"
@@ -136,14 +157,8 @@ class RunVerificationTool:
             )
         self.context.check_bash_allowed(command)
         timeout = int(arguments.get("timeout", 120))
-        completed = subprocess.run(
-            command,
-            shell=True,
-            cwd=str(cwd),
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
+        completed = run_shell_command(
+            command, cwd, _effective_timeout(timeout, turn_timeout)
         )
         return (
             f"exit_code: {completed.returncode}\n"
@@ -152,6 +167,63 @@ class RunVerificationTool:
             f"stdout:\n{completed.stdout}\n"
             f"stderr:\n{completed.stderr}"
         )
+
+
+def run_shell_command(
+    command: str,
+    cwd: Path,
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run a shell command and reclaim its descendants on a timeout."""
+    process = subprocess.Popen(
+        command,
+        shell=True,
+        cwd=str(cwd),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(process)
+        stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(
+            command, timeout, output=stdout, stderr=stderr
+        ) from None
+    return subprocess.CompletedProcess(
+        args=command,
+        returncode=process.returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
+def _terminate_process_group(
+    process: subprocess.Popen[str],
+    *,
+    grace_seconds: float = _PROCESS_TERMINATION_GRACE_SECONDS,
+) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    if grace_seconds:
+        try:
+            process.wait(timeout=grace_seconds)
+        except subprocess.TimeoutExpired:
+            pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def _effective_timeout(requested: int, turn_timeout: float | None) -> float:
+    if turn_timeout is None:
+        return float(requested)
+    return min(float(requested), max(0.001, turn_timeout))
 
 
 def detect_verification_command(cwd: Path) -> tuple[str, str | None]:
@@ -181,7 +253,9 @@ def detect_verification_command(cwd: Path) -> tuple[str, str | None]:
     py_files = _collect_python_files(cwd)
     if py_files:
         rels = sorted(str(path.relative_to(cwd)) for path in py_files)
-        return "py_compile", command_from_args([sys.executable, "-m", "py_compile", *rels])
+        return "py_compile", command_from_args(
+            [sys.executable, "-m", "py_compile", *rels]
+        )
 
     return "none", None
 

@@ -2,20 +2,27 @@ from __future__ import annotations
 
 import unittest
 
-from insightagent.api.messages import Message, ModelResponse
-from insightagent.telemetry.usage import UsageTracker, estimate_tokens
+from langchain_core.messages import AIMessage
+
+from insightagent.graph.usage import UsageAccumulator
 
 
 class UsageTests(unittest.TestCase):
-    def test_estimates_and_accumulates_usage(self) -> None:
-        tracker = UsageTracker()
+    def test_accumulates_provider_reported_tokens_without_character_estimates(self) -> None:
+        accumulator = UsageAccumulator()
 
-        tracker.record_model_call([Message(role="user", content="hello world")], ModelResponse(content="ok"))
+        accumulator.record(
+            AIMessage(
+                content="hello world",
+                usage_metadata={"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
+            )
+        )
+        accumulator.record(AIMessage(content="no metadata"))
 
-        self.assertEqual(estimate_tokens(0), 0)
-        self.assertEqual(tracker.turns, 1)
-        self.assertGreater(tracker.total_tokens_est, 0)
-        self.assertIn("total_tokens_est", tracker.summary())
+        self.assertEqual(
+            accumulator.snapshot(),
+            {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
+        )
 
 
 if __name__ == "__main__":

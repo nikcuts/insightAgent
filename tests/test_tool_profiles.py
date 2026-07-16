@@ -4,9 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from langchain_core.tools import BaseTool
+
+from insightagent.graph.tools import build_builtin_tools
 from insightagent.mcp.config import MCPConfig, MCPServerConfig
 from insightagent.runtime.tool_context import ToolContext
-from insightagent.tools import default_tools
 
 
 def load_profile_api():
@@ -65,9 +67,16 @@ class ToolProfileTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             context = ToolContext(workspace=Path(directory))
-            selected = filter_tools(default_tools(context), profile="coding-basic", allowed_tools=allowed)
+            selected = filter_tools(
+                build_builtin_tools(context),
+                profile="coding-basic",
+                allowed_tools=allowed,
+            )
 
-        self.assertEqual([tool.name for tool in selected], ["read_file", "grep_search", "git_status"])
+        self.assertEqual(
+            [tool.name for tool in selected], ["read_file", "grep_search", "git_status"]
+        )
+        self.assertTrue(all(isinstance(tool, BaseTool) for tool in selected))
 
     def test_unknown_allowed_tool_is_rejected_instead_of_silently_ignored(self) -> None:
         filter_tools, *_ = load_profile_api()
@@ -75,13 +84,25 @@ class ToolProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             context = ToolContext(workspace=Path(directory))
             with self.assertRaises(ValueError):
-                filter_tools(default_tools(context), profile="coding-basic", allowed_tools={"read_file", "missing"})
+                filter_tools(
+                    build_builtin_tools(context),
+                    profile="coding-basic",
+                    allowed_tools={"read_file", "missing"},
+                )
 
     def test_default_runtime_does_not_select_mcp_even_when_config_enabled(self) -> None:
-        _filter_tools, _parse_name_list, resolve_mcp_server_names, select_mcp_config, _tool_names = load_profile_api()
+        (
+            _filter_tools,
+            _parse_name_list,
+            resolve_mcp_server_names,
+            select_mcp_config,
+            _tool_names,
+        ) = load_profile_api()
         config = MCPConfig(
             servers={
-                "playwright": MCPServerConfig(name="playwright", command="npx", args=["@playwright/mcp"]),
+                "playwright": MCPServerConfig(
+                    name="playwright", command="npx", args=["@playwright/mcp"]
+                ),
                 "github": MCPServerConfig(name="github", command="github-mcp-server"),
             },
             loaded_files=("mcp_config.json",),
@@ -95,16 +116,28 @@ class ToolProfileTests(unittest.TestCase):
         self.assertEqual(selected.loaded_files, ("mcp_config.json",))
 
     def test_mcp_selection_requires_profile_or_explicit_server_name(self) -> None:
-        _filter_tools, _parse_name_list, resolve_mcp_server_names, select_mcp_config, _tool_names = load_profile_api()
+        (
+            _filter_tools,
+            _parse_name_list,
+            resolve_mcp_server_names,
+            select_mcp_config,
+            _tool_names,
+        ) = load_profile_api()
         config = MCPConfig(
             servers={
-                "playwright": MCPServerConfig(name="playwright", command="npx", args=["@playwright/mcp"]),
+                "playwright": MCPServerConfig(
+                    name="playwright", command="npx", args=["@playwright/mcp"]
+                ),
                 "github": MCPServerConfig(name="github", command="github-mcp-server"),
             }
         )
 
-        profile_selected = select_mcp_config(config, resolve_mcp_server_names("mcp-playwright", None))
-        cli_selected = select_mcp_config(config, resolve_mcp_server_names("coding-basic", ["github"]))
+        profile_selected = select_mcp_config(
+            config, resolve_mcp_server_names("mcp-playwright", None)
+        )
+        cli_selected = select_mcp_config(
+            config, resolve_mcp_server_names("coding-basic", ["github"])
+        )
 
         self.assertEqual(set(profile_selected.servers), {"playwright"})
         self.assertEqual(set(cli_selected.servers), {"github"})

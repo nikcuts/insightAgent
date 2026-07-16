@@ -6,7 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from insightagent.config import language_directive, load_dotenv_files, load_runtime_config
+from insightagent.config import (
+    language_directive,
+    load_dotenv_files,
+    load_runtime_config,
+)
 
 
 class ConfigTests(unittest.TestCase):
@@ -18,7 +22,9 @@ class ConfigTests(unittest.TestCase):
 
     def test_language_override_maps_to_response_language(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            config = load_runtime_config(Path(directory), overrides={"language": "Chinese"})
+            config = load_runtime_config(
+                Path(directory), overrides={"language": "Chinese"}
+            )
 
         self.assertEqual(config.response_language, "Chinese")
 
@@ -34,6 +40,14 @@ class ConfigTests(unittest.TestCase):
             config = load_runtime_config(workspace)
 
         self.assertEqual(config.response_language, "Japanese")
+
+    def test_model_tuning_defaults_preserve_openai_compatible_behavior(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = load_runtime_config(Path(directory))
+
+        self.assertEqual(config.temperature, 0.01)
+        self.assertEqual(config.top_p, 0.95)
+        self.assertEqual(config.max_retries, 3)
 
     def test_language_directive_auto_mentions_mirroring(self) -> None:
         directive = language_directive("auto")
@@ -55,11 +69,21 @@ class ConfigMergeTests(unittest.TestCase):
             user_home.mkdir()
             (workspace / ".insightagent").mkdir(parents=True)
             (user_home / "config.json").write_text(
-                json.dumps({"model": {"provider": "openai", "name": "small"}, "runtime": {"timeout": 10}}),
+                json.dumps(
+                    {
+                        "model": {"provider": "openai", "name": "small"},
+                        "runtime": {"timeout": 10},
+                    }
+                ),
                 encoding="utf-8",
             )
             (workspace / ".insightagent" / "config.json").write_text(
-                json.dumps({"model": {"name": "project-model"}, "permissions": {"mode": "read-only"}}),
+                json.dumps(
+                    {
+                        "model": {"name": "project-model"},
+                        "permissions": {"mode": "read-only"},
+                    }
+                ),
                 encoding="utf-8",
             )
             (workspace / ".insightagent" / "local.json").write_text(
@@ -79,14 +103,49 @@ class ConfigMergeTests(unittest.TestCase):
             self.assertEqual(config.permission_mode, "read-only")
             self.assertEqual(len(config.loaded_files), 3)
 
-    def test_load_dotenv_files_sets_missing_values_without_overriding_existing_environment(self) -> None:
+    def test_loads_nested_model_tuning_and_programmatic_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            (workspace / ".insightagent").mkdir(parents=True)
+            (workspace / ".insightagent" / "config.json").write_text(
+                json.dumps(
+                    {
+                        "runtime": {
+                            "temperature": 0.4,
+                            "top_p": 0.8,
+                            "max_retries": 9,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_runtime_config(
+                workspace,
+                overrides={"temperature": 0.2, "top_p": 0.7, "max_retries": 4},
+            )
+
+        self.assertEqual(config.temperature, 0.2)
+        self.assertEqual(config.top_p, 0.7)
+        self.assertEqual(config.max_retries, 4)
+
+    def test_load_dotenv_files_sets_missing_values_without_overriding_existing_environment(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             workspace = root / "workspace"
             workspace.mkdir()
-            (root / ".env").write_text("ROOT_ONLY=root\nSHARED=root-value\n", encoding="utf-8")
-            (workspace / ".env").write_text("WORKSPACE_ONLY=workspace\nSHARED=workspace-value\n", encoding="utf-8")
-            old_values = {name: os.environ.get(name) for name in ["ROOT_ONLY", "WORKSPACE_ONLY", "SHARED"]}
+            (root / ".env").write_text(
+                "ROOT_ONLY=root\nSHARED=root-value\n", encoding="utf-8"
+            )
+            (workspace / ".env").write_text(
+                "WORKSPACE_ONLY=workspace\nSHARED=workspace-value\n", encoding="utf-8"
+            )
+            old_values = {
+                name: os.environ.get(name)
+                for name in ["ROOT_ONLY", "WORKSPACE_ONLY", "SHARED"]
+            }
             os.environ["SHARED"] = "already-set"
             for name in ["ROOT_ONLY", "WORKSPACE_ONLY"]:
                 os.environ.pop(name, None)

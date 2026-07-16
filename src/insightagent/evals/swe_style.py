@@ -1,29 +1,39 @@
 """Run local SWE-bench-style repair evaluations.
 
 The harness copies each broken repository fixture into an isolated workspace,
-records the baseline verification result, runs ``insightagent.cli.run_task``
-with the requested provider/model, then runs the same verification command
-again. A case is resolved only when the baseline fails and the final
-verification passes.
+records the baseline verification result, invokes the LangGraph runner in the
+same process by default, then runs the same verification command again. A case
+is resolved only when the baseline fails and the final verification passes.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import difflib
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass, field
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..config import load_dotenv_files
+from ..config import RuntimeConfig, load_dotenv_files
+from ..graph.models import ModelConfigurationError
+from ..graph.observability import sanitize_for_model_trace_and_persistence
+from ..graph.runner import run_task as graph_run_task
+from ..mcp.config import MCPConfig
+from ..mcp.errors import MCPConfigError
+
+
+_PROCESS_TERMINATION_GRACE_SECONDS = 0.2
 
 
 @dataclass(frozen=True)
@@ -71,6 +81,8 @@ class CaseRunResult:
     baseline: CommandResult
     agent: CommandResult | None
     verification: CommandResult | None
+    langfuse_trace_id: str | None = None
+    trace_status: str = "unavailable"
 
 
 def load_cases(dataset_path: str | Path, checkout_root: str | Path | None = None) -> list[SweStyleCase]:
@@ -127,33 +139,14 @@ def run_command(
     timeout_seconds: float,
     env: dict[str, str] | None = None,
 ) -> CommandResult:
-    start = time.monotonic()
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=str(cwd),
-            env=env,
-            shell=True,
-            text=True,
-            capture_output=True,
-            timeout=timeout_seconds,
-        )
-        return CommandResult(
-            command=command,
-            exit_code=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-            duration_seconds=time.monotonic() - start,
-        )
-    except subprocess.TimeoutExpired as error:
-        return CommandResult(
-            command=command,
-            exit_code=124,
-            stdout=_decode_timeout_output(error.stdout),
-            stderr=_decode_timeout_output(error.stderr),
-            duration_seconds=time.monotonic() - start,
-            timed_out=True,
-        )
+    return _run_subprocess(
+        command,
+        cwd=cwd,
+        timeout_seconds=timeout_seconds,
+        env=env,
+        shell=True,
+        display_command=command,
+    )
 
 
 def run_case(
@@ -172,9 +165,10 @@ def run_case(
     max_tool_iterations: int = 12,
     max_output_tokens: int = 4096,
     language: str = "Chinese",
+    subprocess_mode: bool = False,
 ) -> CaseRunResult:
     workspace = prepare_workspace(case, run_root, run_id)
-    trace_path = Path(report_root).expanduser().resolve() / run_id / f"{case.id}.trace.jsonl"
+    trace_path = _trace_path(report_root, run_id, case.id)
     trace_path.parent.mkdir(parents=True, exist_ok=True)
 
     baseline = run_command(case.test_command, cwd=workspace, timeout_seconds=test_timeout)
@@ -192,6 +186,7 @@ def run_case(
             baseline=baseline,
             agent=None,
             verification=None,
+            trace_status=_trace_status(trace_path),
         )
 
     if dry_run:
@@ -207,35 +202,69 @@ def run_case(
             baseline=baseline,
             agent=None,
             verification=None,
+            trace_status=_trace_status(trace_path),
         )
 
-    env = _subprocess_env(project_root)
     task = build_task_prompt(case)
-    agent_command = build_agent_command(
-        workspace=workspace,
-        trace_path=trace_path,
-        task=task,
-        provider=provider,
-        model=model,
-        provider_timeout=provider_timeout,
-        max_wall_seconds=max_wall_seconds,
-        max_tool_iterations=max_tool_iterations,
-        max_output_tokens=max_output_tokens,
-        language=language,
-    )
-    agent = run_process(
-        agent_command,
-        cwd=project_root,
-        timeout_seconds=max_wall_seconds + 30,
-        env=env,
-    )
+    if subprocess_mode:
+        agent = run_process(
+            build_subprocess_command(
+                workspace=workspace,
+                trace_path=trace_path,
+                task=task,
+                provider=provider,
+                model=model,
+                provider_timeout=provider_timeout,
+                max_wall_seconds=max_wall_seconds,
+                max_tool_iterations=max_tool_iterations,
+                max_output_tokens=max_output_tokens,
+                language=language,
+            ),
+            cwd=project_root,
+            timeout_seconds=max_wall_seconds + 30 if max_wall_seconds > 0 else None,
+            env=_subprocess_env(project_root),
+        )
+        langfuse_trace_id = _trace_id_from_debug_trace(trace_path)
+        if agent.timed_out:
+            agent_failure_mode = "subprocess_timeout"
+        elif _debug_trace_has_failure_kind(trace_path, "time_budget_exceeded"):
+            agent = CommandResult(
+                command=agent.command,
+                exit_code=124,
+                stdout=agent.stdout,
+                stderr=agent.stderr,
+                duration_seconds=agent.duration_seconds,
+                timed_out=True,
+            )
+            agent_failure_mode = "graph_timeout"
+        else:
+            agent_failure_mode = "subprocess_error" if agent.exit_code != 0 else None
+    else:
+        agent, langfuse_trace_id, agent_failure_mode = _run_graph_case(
+            task=task,
+            workspace=workspace,
+            trace_path=trace_path,
+            provider=provider,
+            model=model,
+            provider_timeout=provider_timeout,
+            max_wall_seconds=max_wall_seconds,
+            max_tool_iterations=max_tool_iterations,
+            max_output_tokens=max_output_tokens,
+            language=language,
+            session_id=f"swe-{_safe_name(run_id)}-{_safe_name(case.id)}",
+        )
     verification = run_command(case.test_command, cwd=workspace, timeout_seconds=test_timeout)
     changes = analyze_workspace_changes(case.source_dir, workspace)
-    resolved = baseline.exit_code != 0 and verification.exit_code == 0 and not changes.test_files_changed
-    if resolved:
-        status = "resolved"
-    elif baseline.exit_code == 0:
+    verification_resolved = (
+        baseline.exit_code != 0 and verification.exit_code == 0 and not changes.test_files_changed
+    )
+    resolved = verification_resolved and agent.exit_code == 0 and agent_failure_mode is None
+    if baseline.exit_code == 0:
         status = "invalid_baseline"
+    elif agent_failure_mode is not None or agent.exit_code != 0:
+        status = "agent_error"
+    elif resolved:
+        status = "resolved"
     elif verification.exit_code == 0 and changes.test_files_changed:
         status = "invalid_test_modified"
     elif agent.exit_code != 0:
@@ -249,6 +278,7 @@ def run_case(
         changes=changes,
         status=status,
         resolved=resolved,
+        agent_failure_mode=agent_failure_mode,
     )
     return CaseRunResult(
         id=case.id,
@@ -261,6 +291,8 @@ def run_case(
         baseline=baseline,
         agent=agent,
         verification=verification,
+        langfuse_trace_id=langfuse_trace_id,
+        trace_status=_trace_status(trace_path),
     )
 
 
@@ -276,7 +308,7 @@ def analyze_existing_run(
     workspace = run_root_path / run_id / _safe_name(case.id)
     if not workspace.is_dir():
         raise FileNotFoundError(f"existing run workspace not found: {workspace}")
-    trace_path = Path(report_root).expanduser().resolve() / run_id / f"{case.id}.trace.jsonl"
+    trace_path = _trace_path(report_root, run_id, case.id)
     baseline_workspace = prepare_workspace(case, run_root_path, f"{run_id}.__baseline__.{_safe_name(case.id)}")
     baseline_parent = baseline_workspace.parent
     try:
@@ -313,6 +345,7 @@ def analyze_existing_run(
         baseline=baseline,
         agent=None,
         verification=verification,
+        trace_status=_trace_status(trace_path),
     )
 
 
@@ -394,17 +427,20 @@ def classify_failure_mode(
     changes: WorkspaceChanges,
     status: str,
     resolved: bool,
+    agent_failure_mode: str | None = None,
 ) -> str:
-    if resolved:
-        return "resolved"
     if status == "dry_run":
         return "not_run"
     if status == "invalid_environment":
         return "invalid_environment"
     if baseline.exit_code == 0:
         return "invalid_baseline"
+    if agent_failure_mode is not None:
+        return agent_failure_mode
     if agent is not None and agent.exit_code != 0:
-        return "agent_error"
+        return agent_failure_mode or "agent_error"
+    if resolved:
+        return "resolved"
     if verification is None:
         return "missing_verification"
     if verification.timed_out:
@@ -477,7 +513,7 @@ Required workflow:
 """
 
 
-def build_agent_command(
+def build_subprocess_command(
     *,
     workspace: Path,
     trace_path: Path,
@@ -490,6 +526,7 @@ def build_agent_command(
     max_output_tokens: int,
     language: str,
 ) -> list[str]:
+    """构建显式隔离模式下的图 CLI 命令。"""
     command = [
         sys.executable,
         "-m",
@@ -523,16 +560,132 @@ def build_agent_command(
     return command
 
 
+def _run_graph_case(
+    *,
+    task: str,
+    workspace: Path,
+    trace_path: Path,
+    provider: str,
+    model: str | None,
+    provider_timeout: int,
+    max_wall_seconds: float,
+    max_tool_iterations: int,
+    max_output_tokens: int,
+    language: str,
+    session_id: str,
+) -> tuple[CommandResult, str | None, str | None]:
+    """执行图运行器，并转换为评测报告需要的稳定结果。"""
+    start = time.monotonic()
+    config = RuntimeConfig(
+        provider=provider,
+        model=model,
+        timeout=provider_timeout,
+        max_wall_seconds=max_wall_seconds,
+        max_tool_iterations=max_tool_iterations,
+        max_output_tokens=max_output_tokens,
+        permission_mode="workspace-write",
+        response_language=language,
+    )
+    try:
+        outcome = graph_run_task(
+            task=task,
+            workspace=workspace,
+            config=config,
+            session_id=session_id,
+            checkpoint_id=None,
+            tool_profile="coding-basic",
+            allowed_tools=None,
+            enabled_mcp_servers=set(),
+            trace_jsonl=str(trace_path),
+            no_trace=True,
+            mcp_config=MCPConfig(),
+        )
+    except asyncio.CancelledError:
+        return (
+            CommandResult(
+                command="graph_run_task",
+                exit_code=1,
+                stdout="",
+                stderr="graph run cancelled",
+                duration_seconds=time.monotonic() - start,
+            ),
+            _trace_id_from_debug_trace(trace_path),
+            "graph_cancelled",
+        )
+    except TimeoutError:
+        return (
+            CommandResult(
+                command="graph_run_task",
+                exit_code=124,
+                stdout="",
+                stderr="graph run timed out",
+                duration_seconds=time.monotonic() - start,
+                timed_out=True,
+            ),
+            _trace_id_from_debug_trace(trace_path),
+            "graph_timeout",
+        )
+    except (MCPConfigError, ModelConfigurationError):
+        return (
+            CommandResult(
+                command="graph_run_task",
+                exit_code=1,
+                stdout="",
+                stderr="graph initialization failed",
+                duration_seconds=time.monotonic() - start,
+            ),
+            _trace_id_from_debug_trace(trace_path),
+            "graph_initialization_error",
+        )
+    except Exception:
+        return (
+            CommandResult(
+                command="graph_run_task",
+                exit_code=1,
+                stdout="",
+                stderr="graph run failed",
+                duration_seconds=time.monotonic() - start,
+            ),
+            _trace_id_from_debug_trace(trace_path),
+            "graph_error",
+        )
+
+    state = getattr(outcome, "state", {})
+    phase = state.get("phase") if isinstance(state, Mapping) else None
+    failed = phase == "failed"
+    timed_out = failed and _state_has_failure_kind(state, "time_budget_exceeded")
+    trace_id = getattr(outcome, "trace_id", None)
+    return (
+        CommandResult(
+            command="graph_run_task",
+            exit_code=124 if timed_out else 1 if failed else 0,
+            stdout=str(getattr(outcome, "final_answer", "")),
+            stderr=(
+                "graph run timed out"
+                if timed_out
+                else "graph reported a failed terminal state"
+                if failed
+                else ""
+            ),
+            duration_seconds=time.monotonic() - start,
+            timed_out=timed_out,
+        ),
+        trace_id if isinstance(trace_id, str) else None,
+        "graph_timeout" if timed_out else "graph_failed" if failed else None,
+    )
+
+
 def write_reports(results: list[CaseRunResult], report_root: str | Path, run_id: str) -> tuple[Path, Path]:
-    report_dir = Path(report_root).expanduser().resolve() / run_id
+    report_dir = _report_directory(report_root, run_id)
     report_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = report_dir / "results.jsonl"
     md_path = report_dir / "summary.md"
+    redacted_results = [_redact_case_result(result) for result in results]
     jsonl_path.write_text(
-        "\n".join(json.dumps(_to_jsonable(result), ensure_ascii=False) for result in results) + "\n",
+        "\n".join(json.dumps(_to_jsonable(result), ensure_ascii=False) for result in redacted_results) + "\n",
         encoding="utf-8",
     )
-    md_path.write_text(render_summary(results), encoding="utf-8")
+    md_path.write_text(render_summary(redacted_results), encoding="utf-8")
     return jsonl_path, md_path
 
 
@@ -549,9 +702,9 @@ def export_predictions(
         lines.append(
             json.dumps(
                 {
-                    "instance_id": result.id,
-                    "model_name_or_path": model_name_or_path,
-                    "model_patch": result.changes.patch,
+                    "instance_id": _redact_text(result.id),
+                    "model_name_or_path": _redact_text(model_name_or_path),
+                    "model_patch": _redact_text(result.changes.patch),
                 },
                 ensure_ascii=False,
             )
@@ -560,7 +713,55 @@ def export_predictions(
     return prediction_path
 
 
+def _redact_case_result(result: CaseRunResult) -> CaseRunResult:
+    return replace(
+        result,
+        id=_redact_text(result.id),
+        status=_redact_text(result.status),
+        failure_mode=_redact_text(result.failure_mode),
+        workspace=_redact_text(result.workspace),
+        trace_jsonl=_redact_text(result.trace_jsonl),
+        changes=_redact_workspace_changes(result.changes),
+        baseline=_redact_command_result(result.baseline),
+        agent=None if result.agent is None else _redact_command_result(result.agent),
+        verification=None
+        if result.verification is None
+        else _redact_command_result(result.verification),
+        langfuse_trace_id=None
+        if result.langfuse_trace_id is None
+        else _redact_text(result.langfuse_trace_id),
+        trace_status=_redact_text(result.trace_status),
+    )
+
+
+def _redact_workspace_changes(changes: WorkspaceChanges) -> WorkspaceChanges:
+    return replace(
+        changes,
+        modified_files=[_redact_text(path) for path in changes.modified_files],
+        added_files=[_redact_text(path) for path in changes.added_files],
+        deleted_files=[_redact_text(path) for path in changes.deleted_files],
+        test_files_changed=[_redact_text(path) for path in changes.test_files_changed],
+        source_files_changed=[_redact_text(path) for path in changes.source_files_changed],
+        patch=_redact_text(changes.patch),
+    )
+
+
+def _redact_command_result(result: CommandResult) -> CommandResult:
+    return replace(
+        result,
+        command=_redact_text(result.command),
+        stdout=_redact_text(result.stdout),
+        stderr=_redact_text(result.stderr),
+    )
+
+
+def _redact_text(value: str) -> str:
+    # Redaction markers can be longer than the secret values they replace.
+    return str(sanitize_for_model_trace_and_persistence(value, max_chars=max(len(value) * 4, 1)))
+
+
 def render_summary(results: list[CaseRunResult]) -> str:
+    results = [_redact_case_result(result) for result in results]
     total = len(results)
     resolved = sum(1 for result in results if result.resolved)
     invalid_baselines = sum(1 for result in results if result.status == "invalid_baseline")
@@ -580,8 +781,8 @@ def render_summary(results: list[CaseRunResult]) -> str:
         f"- Resolution rate: {resolution_rate:.1f}%",
         f"- Raw resolution rate: {raw_rate:.1f}%",
         "",
-        "| Case | Status | Failure Mode | Baseline | Agent | Verification | Source Changes | Test Changes | Added Files | Trace | Patch + | Patch - | Workspace |",
-        "| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- | ---: | ---: | --- |",
+        "| Case | Status | Failure Mode | Baseline | Agent | Verification | Source Changes | Test Changes | Added Files | Trace | Trace Status | Langfuse Trace | Patch + | Patch - | Workspace |",
+        "| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | ---: | ---: | --- |",
     ]
     for result in results:
         agent_code = "" if result.agent is None else str(result.agent.exit_code)
@@ -595,6 +796,8 @@ def render_summary(results: list[CaseRunResult]) -> str:
             f"{_format_files(result.changes.test_files_changed)} | "
             f"{_format_files(result.changes.added_files)} | "
             f"`{result.trace_jsonl}` | "
+            f"{result.trace_status} | "
+            f"{result.langfuse_trace_id or ''} | "
             f"{added_lines} | {deleted_lines} | "
             f"`{result.workspace}` |"
         )
@@ -609,29 +812,52 @@ def _is_evaluable_result(result: CaseRunResult) -> bool:
 def run_process(
     command: list[str],
     cwd: str | Path,
-    timeout_seconds: float,
+    timeout_seconds: float | None,
     env: dict[str, str] | None = None,
 ) -> CommandResult:
-    start = time.monotonic()
     display_command = subprocess.list2cmdline(command)
+    return _run_subprocess(
+        command,
+        cwd=cwd,
+        timeout_seconds=timeout_seconds,
+        env=env,
+        shell=False,
+        display_command=display_command,
+    )
+
+
+def _run_subprocess(
+    command: str | list[str],
+    *,
+    cwd: str | Path,
+    timeout_seconds: float | None,
+    env: dict[str, str] | None,
+    shell: bool,
+    display_command: str,
+) -> CommandResult:
+    start = time.monotonic()
+    process = subprocess.Popen(
+        command,
+        cwd=str(cwd),
+        env=env,
+        shell=shell,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=os.name == "posix",
+    )
     try:
-        completed = subprocess.run(
-            command,
-            cwd=str(cwd),
-            env=env,
-            shell=False,
-            text=True,
-            capture_output=True,
-            timeout=timeout_seconds,
-        )
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
         return CommandResult(
             command=display_command,
-            exit_code=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+            exit_code=process.returncode,
+            stdout=stdout,
+            stderr=stderr,
             duration_seconds=time.monotonic() - start,
         )
     except subprocess.TimeoutExpired as error:
+        _terminate_process_tree(process)
+        process.communicate()
         return CommandResult(
             command=display_command,
             exit_code=124,
@@ -640,6 +866,29 @@ def run_process(
             duration_seconds=time.monotonic() - start,
             timed_out=True,
         )
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=_PROCESS_TERMINATION_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        return
+
+    process.terminate()
+    try:
+        process.wait(timeout=_PROCESS_TERMINATION_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
 
 
 def default_project_root() -> Path:
@@ -656,7 +905,7 @@ def main() -> None:
     parser.add_argument("--run-root", default="workspaces/evals/swe_style")
     parser.add_argument("--report-root", default="reports/swe_style")
     parser.add_argument("--provider", default="siliconflow")
-    parser.add_argument("--model", default="Qwen/Qwen2.5-72B-Instruct")
+    parser.add_argument("--model", help="Override MODEL_ID for this evaluation run.")
     parser.add_argument(
         "--prediction-model-name",
         help="Value for model_name_or_path in SWE-bench predictions.jsonl. Defaults to --model.",
@@ -672,6 +921,11 @@ def main() -> None:
     parser.add_argument("--max-tool-iterations", type=int, default=12)
     parser.add_argument("--max-output-tokens", type=int, default=4096)
     parser.add_argument("--language", default="Chinese")
+    parser.add_argument(
+        "--subprocess",
+        action="store_true",
+        help="Run the graph CLI in a child process instead of the default in-process runner.",
+    )
     parser.add_argument("--fail-on-unresolved", action="store_true")
     args = parser.parse_args()
 
@@ -716,6 +970,7 @@ def main() -> None:
                 max_tool_iterations=args.max_tool_iterations,
                 max_output_tokens=args.max_output_tokens,
                 language=args.language,
+                subprocess_mode=args.subprocess,
             )
         results.append(result)
         print(f"{case.id}: {result.status}")
@@ -724,12 +979,14 @@ def main() -> None:
     predictions_path = export_predictions(
         results,
         Path(project_root / args.report_root) / run_id / "predictions.jsonl",
-        model_name_or_path=args.prediction_model_name or args.model,
+        model_name_or_path=args.prediction_model_name or args.model or os.environ.get("MODEL_ID", "unknown"),
     )
     print(f"results_jsonl: {jsonl_path}")
     print(f"summary_md: {summary_path}")
     print(f"predictions_jsonl: {predictions_path}")
-    if args.fail_on_unresolved and any(not result.resolved for result in results):
+    if args.fail_on_unresolved and any(
+        _is_evaluable_result(result) and not result.resolved for result in results
+    ):
         raise SystemExit(1)
 
 
@@ -739,6 +996,83 @@ def _subprocess_env(project_root: str | Path) -> dict[str, str]:
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = str(src_dir) if not existing else f"{src_dir}{os.pathsep}{existing}"
     return env
+
+
+def _trace_status(trace_path: Path) -> str:
+    """只报告可读取的 JSONL 调试追踪，避免把空路径伪装成可用。"""
+    try:
+        if not trace_path.is_file():
+            return "unavailable"
+        lines = trace_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return "unavailable"
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, Mapping):
+            return "available"
+    return "unavailable"
+
+
+def _report_directory(report_root: str | Path, run_id: str) -> Path:
+    root = Path(report_root).expanduser().resolve()
+    directory = root / run_id
+    _assert_child(root, directory)
+    return directory
+
+
+def _trace_path(report_root: str | Path, run_id: str, case_id: str) -> Path:
+    report_dir = _report_directory(report_root, run_id)
+    path = report_dir / f"{_safe_name(case_id)}.trace.jsonl"
+    _assert_child(report_dir, path)
+    return path
+
+
+def _trace_id_from_debug_trace(trace_path: Path) -> str | None:
+    """从图调试事件中提取可选的 Langfuse trace ID。"""
+    try:
+        lines = trace_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return None
+    for line in reversed(lines):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, Mapping):
+            trace_id = event.get("trace_id")
+            if isinstance(trace_id, str) and trace_id:
+                return trace_id
+    return None
+
+
+def _debug_trace_has_failure_kind(trace_path: Path, failure_kind: str) -> bool:
+    try:
+        lines = trace_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return False
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, Mapping) and _state_has_failure_kind(event, failure_kind):
+            return True
+    return False
+
+
+def _state_has_failure_kind(state: object, failure_kind: str) -> bool:
+    if not isinstance(state, Mapping):
+        return False
+    events = state.get("tool_events")
+    if not isinstance(events, list):
+        return False
+    return any(
+        isinstance(event, Mapping) and event.get("failure_kind") == failure_kind
+        for event in events
+    )
 
 
 def _case_metadata(data: dict[str, Any]) -> dict[str, Any]:
