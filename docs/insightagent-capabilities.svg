@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="880" viewBox="0 0 1600 880" font-family="PingFang SC, STHeiti, Hiragino Sans GB, Microsoft YaHei, sans-serif">
+  <defs>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="112%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f2540" flood-opacity="0.15"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1600" height="880" fill="#f5f8fc"/>
+
+  <text x="40" y="48" font-size="28" font-weight="700" fill="#0f2540">系统能力：从单次任务到可恢复会话的完整闭环</text>
+  <text x="40" y="76" font-size="15" fill="#5b6b80">四个能力象限：执行 Execution · 控制 Control · 恢复 Recovery · 观测 Observability</text>
+
+  <!-- TL: Execution -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="90" width="720" height="345" rx="12" fill="#ffffff" stroke="#3b82f6" stroke-width="1.5"/>
+    <rect x="40" y="90" width="720" height="36" rx="12" fill="#3b82f6"/>
+    <rect x="40" y="112" width="720" height="14" fill="#3b82f6"/>
+  </g>
+  <text x="60" y="115" font-size="17" font-weight="700" fill="#ffffff">执行 · Execution</text>
+  <text x="64" y="162" font-size="15" fill="#1f2b3a">双形态入口：<tspan font-weight="700">insightagent-run</tspan>（非交互一次性任务）· <tspan font-weight="700">insightagent</tspan>（交互式 REPL）</text>
+  <text x="64" y="198" font-size="15" fill="#1f2b3a">工具 Profile：coding-basic / analysis / all / mcp-playwright / mcp-github</text>
+  <text x="64" y="234" font-size="15" fill="#1f2b3a">--allowed-tools 白名单进一步收窄，能力面按任务最小化暴露</text>
+  <rect x="64" y="268" width="600" height="70" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+  <text x="80" y="296" font-size="12.5" font-family="Menlo, monospace" fill="#334155">$ uv run insightagent-run --workspace repo --session-id fix-001</text>
+  <text x="80" y="322" font-size="12.5" font-family="Menlo, monospace" fill="#334155">    --task "修复失败的测试" --tool-profile coding-basic</text>
+
+  <!-- TR: Control -->
+  <g filter="url(#shadow)">
+    <rect x="840" y="90" width="720" height="345" rx="12" fill="#ffffff" stroke="#d97706" stroke-width="1.5"/>
+    <rect x="840" y="90" width="720" height="36" rx="12" fill="#d97706"/>
+    <rect x="840" y="112" width="720" height="14" fill="#d97706"/>
+  </g>
+  <text x="860" y="115" font-size="17" font-weight="700" fill="#ffffff">控制 · Control</text>
+
+  <g font-size="14">
+    <text x="866" y="170" font-weight="700" fill="#1f2b3a">permission_mode</text>
+    <text x="866" y="188" font-size="12" fill="#94a3b8">写权限</text>
+    <rect x="1090" y="148" width="110" height="30" rx="15" fill="none" stroke="#d97706"/>
+    <text x="1145" y="168" text-anchor="middle" font-size="12.5" fill="#b45309">read-only</text>
+    <rect x="1212" y="148" width="150" height="30" rx="15" fill="#d97706"/>
+    <text x="1287" y="168" text-anchor="middle" font-size="12.5" fill="#ffffff">workspace-write</text>
+
+    <text x="866" y="230" font-weight="700" fill="#1f2b3a">approval_mode</text>
+    <text x="866" y="248" font-size="12" fill="#94a3b8">审批门</text>
+    <rect x="1090" y="208" width="110" height="30" rx="15" fill="#d97706"/>
+    <text x="1145" y="228" text-anchor="middle" font-size="12.5" fill="#ffffff">deny</text>
+    <rect x="1212" y="208" width="150" height="30" rx="15" fill="none" stroke="#d97706"/>
+    <text x="1287" y="228" text-anchor="middle" font-size="12.5" fill="#b45309">interrupt</text>
+
+    <text x="866" y="290" font-weight="700" fill="#1f2b3a">execution_mode</text>
+    <text x="866" y="308" font-size="12" fill="#94a3b8">执行隔离</text>
+    <rect x="1090" y="268" width="110" height="30" rx="15" fill="#d97706"/>
+    <text x="1145" y="288" text-anchor="middle" font-size="12.5" fill="#ffffff">host</text>
+    <rect x="1212" y="268" width="150" height="30" rx="15" fill="none" stroke="#d97706"/>
+    <text x="1287" y="288" text-anchor="middle" font-size="12.5" fill="#b45309">sandbox</text>
+  </g>
+  <text x="866" y="346" font-size="13.5" fill="#334155">实心 = 默认值；三个<tspan font-weight="700">正交开关</tspan>自由组合 ⇒ 不同信任级别</text>
+
+  <!-- BL: Recovery -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="485" width="720" height="345" rx="12" fill="#ffffff" stroke="#4f46e5" stroke-width="1.5"/>
+    <rect x="40" y="485" width="720" height="36" rx="12" fill="#4f46e5"/>
+    <rect x="40" y="507" width="720" height="14" fill="#4f46e5"/>
+  </g>
+  <text x="60" y="510" font-size="17" font-weight="700" fill="#ffffff">恢复 · Recovery</text>
+  <text x="64" y="558" font-size="15" fill="#1f2b3a"><tspan font-weight="700">SQLite checkpoint + session 线程</tspan>：任务可中断、可续跑</text>
+  <text x="64" y="594" font-size="15" fill="#1f2b3a">历史 checkpoint 可回看；会话可导出 Markdown 转录</text>
+  <text x="64" y="630" font-size="15" fill="#1f2b3a">上下文治理：裁剪历史时<tspan font-weight="700">保护 system/task 锚点</tspan>与最新工具组</text>
+
+  <g font-size="12.5" text-anchor="middle">
+    <rect x="64" y="672" width="120" height="34" rx="17" fill="#eef2ff" stroke="#4f46e5"/>
+    <text x="124" y="694" fill="#3730a3">运行 turn</text>
+    <line x1="192" y1="689" x2="238" y2="689" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <text x="215" y="680" font-size="10.5" fill="#94a3b8">中断 / 审批</text>
+    <rect x="244" y="672" width="170" height="34" rx="17" fill="#eef2ff" stroke="#4f46e5"/>
+    <text x="329" y="694" fill="#3730a3">SQLite checkpoint</text>
+    <line x1="422" y1="689" x2="468" y2="689" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <text x="445" y="680" font-size="10.5" fill="#94a3b8">resume</text>
+    <rect x="474" y="672" width="140" height="34" rx="17" fill="#eef2ff" stroke="#4f46e5"/>
+    <text x="544" y="694" fill="#3730a3">同线程续跑</text>
+  </g>
+  <text x="64" y="756" font-size="13" fill="#4338ca">审批 interrupt 同样落盘：跨进程恢复，副作用不重放</text>
+
+  <!-- BR: Observability -->
+  <g filter="url(#shadow)">
+    <rect x="840" y="485" width="720" height="345" rx="12" fill="#ffffff" stroke="#0d9488" stroke-width="1.5"/>
+    <rect x="840" y="485" width="720" height="36" rx="12" fill="#0d9488"/>
+    <rect x="840" y="507" width="720" height="14" fill="#0d9488"/>
+  </g>
+  <text x="908" y="510" font-size="17" font-weight="700" fill="#ffffff">观测 · Observability</text>
+  <text x="866" y="558" font-size="15" fill="#1f2b3a"><tspan font-weight="700">Langfuse 全链路 trace</tspan>：模型调用 / 图节点 / 工具决策全程可见</text>
+  <text x="866" y="594" font-size="15" fill="#1f2b3a"><tspan font-weight="700">脱敏 JSONL 导出</tspan>：阶段跃迁 · 工具事件 · 验证记录（含 trace ID）</text>
+  <text x="866" y="630" font-size="15" fill="#1f2b3a"><tspan font-weight="700">run manifest</tspan>（每次运行落盘，可回放审计）：</text>
+
+  <g font-size="12.5" text-anchor="middle">
+    <rect x="866" y="650" width="110" height="30" rx="15" fill="#f0fdfa" stroke="#0d9488"/>
+    <text x="921" y="670" fill="#115e59">run_id</text>
+    <rect x="988" y="650" width="140" height="30" rx="15" fill="#f0fdfa" stroke="#0d9488"/>
+    <text x="1058" y="670" fill="#115e59">policy version</text>
+    <rect x="1140" y="650" width="110" height="30" rx="15" fill="#f0fdfa" stroke="#0d9488"/>
+    <text x="1195" y="670" fill="#115e59">git SHA</text>
+    <rect x="866" y="692" width="130" height="30" rx="15" fill="#f0fdfa" stroke="#0d9488"/>
+    <text x="931" y="712" fill="#115e59">token usage</text>
+    <rect x="1008" y="692" width="110" height="30" rx="15" fill="#f0fdfa" stroke="#0d9488"/>
+    <text x="1063" y="712" fill="#115e59">成本估算</text>
+    <rect x="1130" y="692" width="110" height="30" rx="15" fill="#f0fdfa" stroke="#0d9488"/>
+    <text x="1185" y="712" fill="#115e59">审批历史</text>
+  </g>
+  <text x="866" y="762" font-size="13" fill="#0f766e">敏感信息脱敏后才进入 trace / 状态与导出</text>
+
+  <!-- Hub -->
+  <path d="M 800 348 A 112 112 0 1 1 688 460" fill="none" stroke="#94a3b8" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+  <g filter="url(#shadow)">
+    <circle cx="800" cy="460" r="96" fill="#0f2540"/>
+  </g>
+  <text x="800" y="452" text-anchor="middle" font-size="24" font-weight="700" fill="#ffffff">完整闭环</text>
+  <text x="800" y="482" text-anchor="middle" font-size="13" fill="#cbd5e1">单次任务 → 可恢复会话</text>
+
+  <text x="40" y="862" font-size="12.5" fill="#94a3b8">InsightAgent V5.0 · 执行 / 控制 / 恢复 / 观测 四象限均有回归测试覆盖</text>
+</svg>

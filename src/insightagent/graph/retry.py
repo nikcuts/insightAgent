@@ -34,6 +34,7 @@ PERMANENT_FAILURE_KINDS = frozenset(
         FailureKind.PERMISSION_DENIED,
         FailureKind.TOOL_PROTOCOL_ERROR,
         FailureKind.ENVIRONMENT_ERROR,
+        FailureKind.SANDBOX_UNAVAILABLE,
     }
 )
 

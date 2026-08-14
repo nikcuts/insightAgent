@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from .tool_context import PermissionDenied, WorkspaceViolation
+from .tool_context import PermissionDenied, SandboxUnavailable, WorkspaceViolation
 
 
 class FailureKind(str, Enum):
@@ -19,6 +19,7 @@ class FailureKind(str, Enum):
     NETWORK_ERROR = "network_error"
     PERMISSION_DENIED = "permission_denied"
     TIMEOUT = "timeout"
+    SANDBOX_UNAVAILABLE = "sandbox_unavailable"
     TOOL_PROTOCOL_ERROR = "tool_protocol_error"
     UNKNOWN_ERROR = "unknown_error"
 
@@ -172,6 +173,15 @@ class FailureClassifier:
                 FailureKind.PERMISSION_DENIED,
                 retryable=False,
                 repair_guidance="The operation tried to access a path outside the workspace. Stay inside the workspace.",
+            )
+        if isinstance(exception, SandboxUnavailable):
+            return FailureClassification(
+                FailureKind.SANDBOX_UNAVAILABLE,
+                retryable=False,
+                repair_guidance=(
+                    "Sandbox execution is enabled but the configured runtime is unavailable. "
+                    "Do not fall back to host execution; provision the sandbox or explicitly choose host mode."
+                ),
             )
         if isinstance(exception, subprocess.TimeoutExpired):
             return FailureClassification(

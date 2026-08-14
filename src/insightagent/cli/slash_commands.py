@@ -39,6 +39,8 @@ class GraphSlashCommandProcessor:
         if command == "/permissions":
             return (
                 f"permission_mode={self.runner.permission_mode} "
+                f"approval_mode={getattr(self.runner, 'approval_mode', 'deny')} "
+                f"execution_mode={getattr(self.runner, 'execution_mode', 'host')} "
                 f"tool_profile={self.runner.tool_profile} workspace={self.workspace}"
             )
         if command == "/export":

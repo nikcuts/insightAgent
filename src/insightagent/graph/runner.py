@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
+import hashlib
+import json
+import os
+import subprocess
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -23,10 +28,11 @@ from insightagent.graph.observability import (
     GraphDebugRecorder,
     GraphObservability,
     build_observability,
+    sanitize_for_model_trace_and_persistence,
 )
 from insightagent.graph.project_memory import ProjectMemory, load_project_memory
 from insightagent.graph.sessions import GraphSessionService, build_checkpoint_reader
-from insightagent.graph.state import AgentState, trim_message_prefix
+from insightagent.graph.state import AgentState, JSONValue, trim_message_prefix
 from insightagent.graph.tools import ContractAwareToolInvoker, ToolRuntime, build_builtin_tools
 from insightagent.graph.workflow import build_graph
 from insightagent.mcp.config import MCPConfig, load_mcp_config
@@ -34,6 +40,9 @@ from insightagent.mcp.errors import MCPStartupError
 from insightagent.mcp.manager import MCPManager
 from insightagent.runtime.tool_context import ToolContext
 from insightagent.runtime.types import ToolSpec
+
+
+_POLICY_VERSION = "runtime-hardening-v1"
 
 
 @dataclass(frozen=True)
@@ -99,6 +108,12 @@ class GraphRunner:
             self._tool_context = ToolContext(
                 workspace=self.workspace,
                 permission_mode=self.config.permission_mode,
+                approval_mode=self.config.approval_mode,
+                execution_mode=self.config.execution_mode,
+                sandbox_image=self.config.sandbox_image,
+                sandbox_memory_mb=self.config.sandbox_memory_mb,
+                sandbox_cpus=self.config.sandbox_cpus,
+                sandbox_pids_limit=self.config.sandbox_pids_limit,
             )
             self._project_memory = load_project_memory(self.workspace)
             runtime = ToolRuntime(self._tool_context)
@@ -120,7 +135,7 @@ class GraphRunner:
                 workspace=str(self.workspace),
                 thread_id=f"runner-{uuid.uuid4().hex}",
                 provider=self.config.provider,
-                model=self.config.model or "",
+                model=_effective_model(self.config.model),
                 tool_profile=self.tool_profile,
                 trace_max_chars=self.config.trace_max_chars,
             )
@@ -152,12 +167,15 @@ class GraphRunner:
     ) -> RunOutcome:
         store, model, context = self._require_started()
         thread_id = session_id or uuid.uuid4().hex
+        run_id = uuid.uuid4().hex
+        started_monotonic = time.monotonic()
         observability = build_observability(
             workspace=str(self.workspace),
             thread_id=thread_id,
             provider=self.config.provider,
-            model=self.config.model or "",
+            model=_effective_model(self.config.model),
             task=task,
+            run_id=run_id,
             tool_profile=self.tool_profile,
             event_sink=self._record_graph_event,
             trace_max_chars=self.config.trace_max_chars,
@@ -190,8 +208,17 @@ class GraphRunner:
                 )
         finally:
             observability.flush()
-        state = turn.state
+        state = cast(AgentState, dict(turn.state))
         trace_id = observability.trace_id
+        manifest, checkpoint_id = await self._persist_run_manifest(
+            sessions,
+            thread_id,
+            state,
+            run_id=run_id,
+            started_monotonic=started_monotonic,
+            trace_id=trace_id,
+        )
+        state["run_manifest"] = manifest
         if trace_id is None:
             self._last_trace_ids.pop(thread_id, None)
         else:
@@ -211,9 +238,222 @@ class GraphRunner:
             final_answer=str(state.get("final_answer") or ""),
             state=state,
             thread_id=thread_id,
-            checkpoint_id=turn.checkpoint_id,
+            checkpoint_id=checkpoint_id or turn.checkpoint_id,
             trace_id=trace_id,
         )
+
+    async def resume_turn(
+        self,
+        thread_id: str,
+        resume_value: object,
+        *,
+        max_wall_seconds: float | None = None,
+    ) -> RunOutcome:
+        """Resume a persisted approval interrupt for ``thread_id``.
+
+        LangGraph resumes from the interrupt checkpoint, so the original tool
+        batch is not replayed before the approval decision is applied.
+        """
+        if self.config.approval_mode != "interrupt":
+            raise ValueError("resume_turn requires approval_mode=interrupt")
+        store, model, context = self._require_started()
+        reader = build_checkpoint_reader(store.checkpointer)
+        sessions = GraphSessionService(reader, store)
+        snapshot = await sessions.latest_state(thread_id)
+        values = getattr(snapshot, "values", {})
+        persisted_state = values if isinstance(values, Mapping) else {}
+        task = str(persisted_state.get("task") or "resume approval")
+        prior_manifest = persisted_state.get("run_manifest") or self._load_manifest(thread_id)
+        prior_run_id = (
+            str(prior_manifest.get("run_id"))
+            if isinstance(prior_manifest, Mapping) and prior_manifest.get("run_id")
+            else uuid.uuid4().hex
+        )
+        started_monotonic = time.monotonic()
+        observability = build_observability(
+            workspace=str(self.workspace),
+            thread_id=thread_id,
+            provider=self.config.provider,
+            model=_effective_model(self.config.model),
+            task=task,
+            run_id=prior_run_id,
+            tool_profile=self.tool_profile,
+            event_sink=self._record_graph_event,
+            trace_max_chars=self.config.trace_max_chars,
+        )
+        self._observability = observability
+        services = GraphServices(
+            model=model,
+            tools=self._tools,
+            tool_specs=self._tool_specs,
+            tool_context=context,
+            tool_invoker=ContractAwareToolInvoker(context),
+            max_iterations=self.config.max_tool_iterations,
+            max_tool_output_chars=self.config.max_tool_output_chars,
+            compact_tool_output_chars=self.config.compact_tool_output_chars,
+            project_memory=self._project_memory.render(),
+            language=self.config.response_language,
+            observability=observability,
+        )
+        graph = build_graph(services, checkpointer=store.checkpointer)
+        sessions = GraphSessionService(graph, store)
+        deadline = _deadline(
+            max_wall_seconds
+            if max_wall_seconds is not None
+            else self.config.max_wall_seconds
+        )
+        try:
+            with observability.turn("insightagent-approval-resume"):
+                turn = await sessions.resume_turn(
+                    thread_id,
+                    self.workspace,
+                    resume_value,
+                    deadline_monotonic=deadline,
+                    run_config=observability.runnable_config(),
+                )
+        finally:
+            observability.flush()
+        state = cast(AgentState, dict(turn.state))
+        trace_id = observability.trace_id
+        manifest, checkpoint_id = await self._persist_run_manifest(
+            sessions,
+            thread_id,
+            state,
+            run_id=prior_run_id,
+            started_monotonic=started_monotonic,
+            trace_id=trace_id,
+            prior_manifest=prior_manifest,
+            resume_value=resume_value,
+        )
+        state["run_manifest"] = manifest
+        if trace_id is None:
+            self._last_trace_ids.pop(thread_id, None)
+        else:
+            self._last_trace_ids[thread_id] = trace_id
+        if self._debug_recorder is not None:
+            self._debug_recorder.record_turn(thread_id, state, trace_id=trace_id)
+        if self._console_renderer is not None:
+            self._console_renderer.render(
+                {
+                    "type": "graph_turn",
+                    "thread_id": thread_id,
+                    "phase": state.get("phase"),
+                    "trace_id": trace_id,
+                    "resumed": True,
+                }
+            )
+        return RunOutcome(
+            final_answer=str(state.get("final_answer") or ""),
+            state=state,
+            thread_id=thread_id,
+            checkpoint_id=checkpoint_id or turn.checkpoint_id,
+            trace_id=trace_id,
+        )
+
+    async def _persist_run_manifest(
+        self,
+        sessions: GraphSessionService,
+        thread_id: str,
+        state: AgentState,
+        *,
+        run_id: str,
+        started_monotonic: float,
+        trace_id: str | None,
+        prior_manifest: object | None = None,
+        resume_value: object | None = None,
+    ) -> tuple[dict[str, JSONValue], str | None]:
+        """Persist a bounded, replayable run summary beside the graph state."""
+        prior = dict(prior_manifest) if isinstance(prior_manifest, Mapping) else {}
+        history = prior.get("approval_history", [])
+        approval_history: list[JSONValue] = list(history) if isinstance(history, list) else []
+        if resume_value is not None:
+            approval_history.append(
+                {
+                    "decision": str(sanitize_for_manifest(resume_value)),
+                    "recorded_at": _utc_now(),
+                }
+            )
+        pending = _interrupt_value(state)
+        if pending is not None:
+            approval_history.append(
+                {
+                    "status": "pending",
+                    "payload": sanitize_for_manifest(pending),
+                    "recorded_at": _utc_now(),
+                }
+            )
+        events = state.get("tool_events", [])
+        event_list = events if isinstance(events, list) else []
+        failure_kinds = sorted(
+            {
+                str(event.get("failure_kind"))
+                for event in event_list
+                if isinstance(event, Mapping) and event.get("failure_kind")
+            }
+        )
+        usage = state.get("usage", {})
+        usage_mapping = dict(usage) if isinstance(usage, Mapping) else {}
+        manifest: dict[str, JSONValue] = {
+            "run_id": run_id,
+            "thread_id": thread_id,
+            "workspace": str(self.workspace),
+            "git_sha": _git_sha(self.workspace),
+            "policy_version": _POLICY_VERSION,
+            "provider": self.config.provider,
+            "model": _effective_model(self.config.model),
+            "tool_profile": self.tool_profile,
+            "status": _run_status(state, pending is not None),
+            "phase": str(state.get("phase") or "unknown"),
+            "started_at": prior.get("started_at") or _utc_now(),
+            "finished_at": _utc_now(),
+            "duration_ms": max(0, int((time.monotonic() - started_monotonic) * 1000)),
+            "iterations": int(state.get("iteration", 0)),
+            "tool_call_count": len(event_list),
+            "failure_kinds": failure_kinds,
+            "usage": sanitize_for_manifest(usage_mapping),
+            "estimated_cost_usd": _estimated_cost(usage_mapping),
+            "approval_history": approval_history,
+            "trace_id": trace_id,
+        }
+        paused = pending is not None
+        if not paused:
+            await sessions.update_state(
+                thread_id, {"run_manifest": manifest}, as_node="record_manifest"
+            )
+        await self._write_manifest(thread_id, manifest)
+        if paused:
+            return manifest, None
+        snapshot = await sessions.latest_state(thread_id)
+        snapshot_config = getattr(snapshot, "config", None)
+        checkpoint_config = (
+            snapshot_config.get("configurable", {})
+            if isinstance(snapshot_config, Mapping)
+            else {}
+        )
+        checkpoint_id = (
+            checkpoint_config.get("checkpoint_id")
+            if isinstance(checkpoint_config, Mapping)
+            else None
+        )
+        return manifest, checkpoint_id if isinstance(checkpoint_id, str) else None
+
+    def _manifest_path(self, thread_id: str) -> Path:
+        digest = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
+        return self.session_dir / "manifests" / f"{digest}.json"
+
+    def _load_manifest(self, thread_id: str) -> dict[str, JSONValue] | None:
+        path = self._manifest_path(thread_id)
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return cast(dict[str, JSONValue], value) if isinstance(value, dict) else None
+
+    async def _write_manifest(self, thread_id: str, manifest: Mapping[str, JSONValue]) -> None:
+        path = self._manifest_path(thread_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(manifest, ensure_ascii=False, default=str, sort_keys=True)
+        await asyncio.to_thread(path.write_text, payload + "\n", encoding="utf-8")
 
     async def list_sessions(self) -> list[str]:
         store, _model, _context = self._require_started()
@@ -222,6 +462,14 @@ class GraphRunner:
     @property
     def permission_mode(self) -> str:
         return self.config.permission_mode
+
+    @property
+    def approval_mode(self) -> str:
+        return self.config.approval_mode
+
+    @property
+    def execution_mode(self) -> str:
+        return self.config.execution_mode
 
     @property
     def project_memory_filenames(self) -> tuple[str, ...]:
@@ -402,6 +650,7 @@ def run_task(
     trace_jsonl: str | None,
     no_trace: bool,
     mcp_config: MCPConfig | None = None,
+    resume_value: object | None = None,
 ) -> RunOutcome:
     """Synchronously execute one graph turn for the command-line entry point."""
     workspace = workspace.expanduser().resolve()
@@ -427,6 +676,10 @@ def run_task(
             no_trace=no_trace,
             mcp_config=mcp_config,
         ) as runner:
+            if resume_value is not None:
+                if session_id is None:
+                    raise ValueError("resume_value requires session_id")
+                return await runner.resume_turn(session_id, resume_value)
             return await runner.run_turn(task, session_id=session_id)
 
     return asyncio.run(run())
@@ -464,6 +717,67 @@ def _resolve_session_dir(config: RuntimeConfig, workspace: Path) -> Path:
 
 def _deadline(max_wall_seconds: float) -> float | None:
     return time.monotonic() + max_wall_seconds if max_wall_seconds > 0 else None
+
+
+def _utc_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds")
+
+
+def sanitize_for_manifest(value: object) -> JSONValue:
+    sanitized = sanitize_for_model_trace_and_persistence(value, max_chars=2_000)
+    return cast(JSONValue, sanitized)
+
+
+def _interrupt_value(state: Mapping[str, object]) -> object | None:
+    interrupts = state.get("__interrupt__")
+    if not isinstance(interrupts, (list, tuple)) or not interrupts:
+        return None
+    first = interrupts[0]
+    value = getattr(first, "value", first)
+    return value if value is not None else {"type": "approval"}
+
+
+def _run_status(state: Mapping[str, object], paused: bool) -> str:
+    if paused:
+        return "paused"
+    phase = state.get("phase")
+    if phase == "done":
+        return "completed"
+    if phase == "failed":
+        return "failed"
+    return "running"
+
+
+def _git_sha(workspace: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(workspace), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value else None
+
+
+def _estimated_cost(usage: Mapping[str, object]) -> float | None:
+    try:
+        input_rate = float(os.environ["INSIGHTAGENT_INPUT_COST_PER_1K"])
+        output_rate = float(os.environ["INSIGHTAGENT_OUTPUT_COST_PER_1K"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    input_tokens = usage.get("input_tokens", 0)
+    output_tokens = usage.get("output_tokens", 0)
+    if not isinstance(input_tokens, (int, float)) or not isinstance(output_tokens, (int, float)):
+        return None
+    return round((float(input_tokens) / 1_000 * input_rate) + (float(output_tokens) / 1_000 * output_rate), 8)
+
+
+def _effective_model(configured: str | None) -> str:
+    return configured or os.environ.get("MODEL_ID", "")
 
 
 __all__ = ["GraphRunner", "RunOutcome", "run_task"]

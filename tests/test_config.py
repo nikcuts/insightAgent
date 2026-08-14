@@ -129,6 +129,37 @@ class ConfigMergeTests(unittest.TestCase):
         self.assertEqual(config.top_p, 0.7)
         self.assertEqual(config.max_retries, 4)
 
+    def test_loads_approval_and_sandbox_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            (workspace / ".insightagent").mkdir(parents=True)
+            (workspace / ".insightagent" / "config.json").write_text(
+                json.dumps(
+                    {
+                        "permissions": {
+                            "approval_mode": "interrupt",
+                            "execution_mode": "sandbox",
+                        },
+                        "runtime": {
+                            "sandbox_image": "python:3.12-slim",
+                            "sandbox_memory_mb": 256,
+                            "sandbox_cpus": 0.5,
+                            "sandbox_pids_limit": 32,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_runtime_config(workspace)
+
+        self.assertEqual(config.approval_mode, "interrupt")
+        self.assertEqual(config.execution_mode, "sandbox")
+        self.assertEqual(config.sandbox_image, "python:3.12-slim")
+        self.assertEqual(config.sandbox_memory_mb, 256)
+        self.assertEqual(config.sandbox_cpus, 0.5)
+        self.assertEqual(config.sandbox_pids_limit, 32)
+
     def test_load_dotenv_files_sets_missing_values_without_overriding_existing_environment(
         self,
     ) -> None:

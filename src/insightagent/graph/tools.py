@@ -35,6 +35,7 @@ from insightagent.runtime.failure_classifier import FailureClassifier, FailureKi
 from insightagent.runtime.permissions import PermissionEnforcer
 from insightagent.runtime.tool_context import (
     PermissionDenied,
+    SandboxUnavailable,
     ToolContext,
     WorkspaceViolation,
 )
@@ -64,9 +65,11 @@ from insightagent.tools.state_tools import (
 
 DUPLICATE_CALL_MESSAGE = "这个调用刚刚执行过，结果没有变化，请基于上面已有的结果继续推进，不要再重复调用相同的读取/查询。"
 _MAX_RECENT_SUCCESS = 16
+_MAX_RECENT_READ_RANGES_PER_FILE = 12
 _PROCESS_TERMINATION_GRACE_SECONDS = 0.2
 _SNAPSHOT_IGNORED_DIRECTORIES = {
     ".git",
+    ".insightagent",
     ".hg",
     ".svn",
     "__pycache__",
@@ -345,6 +348,7 @@ class ToolRuntime:
         self._retry_policy = RetryPolicy()
         self._non_retryable_failures: dict[str, ToolExecutionResult] = {}
         self._recent_success: OrderedDict[str, bool] = OrderedDict()
+        self._recent_read_ranges: OrderedDict[str, list[tuple[int, int]]] = OrderedDict()
         self._backoff_attempts: dict[str, int] = {}
         for tool in resolved_tools:
             if tool.name in self._tools:
@@ -372,6 +376,9 @@ class ToolRuntime:
         duplicate = self._duplicate_read_result(name, arguments, spec, signature)
         if duplicate is not None:
             return duplicate
+        overlapping = self._overlapping_read_result(name, arguments, spec)
+        if overlapping is not None:
+            return overlapping
         suppressed_failure = self._suppressed_failure_result(
             name, arguments, spec, signature
         )
@@ -379,7 +386,7 @@ class ToolRuntime:
             return suppressed_failure
         permission = self._permission_enforcer.check(spec, self.context, arguments)
         if not permission.allowed:
-            return self._permission_denied_result(
+            result = self._permission_denied_result(
                 name,
                 arguments,
                 spec,
@@ -387,6 +394,10 @@ class ToolRuntime:
                 permission.command_kind,
                 signature,
             )
+            # Treat policy denials as permanent failures so repeated unsafe
+            # requests are auditable and converge without re-evaluation.
+            self._record_outcome(signature, spec, result)
+            return result
         metadata: dict[str, object] = {"signature": signature}
         prior_attempts = self._backoff_attempts.get(signature, 0)
         if prior_attempts > 0:
@@ -457,21 +468,22 @@ class ToolRuntime:
                 outcome,
             )
         self._record_outcome(signature, spec, result)
+        if name == "read_file" and not result.is_error and not result.suppressed:
+            self._remember_read_range(arguments)
         return result
 
     def _unknown_tool_result(
         self, name: str, arguments: dict[str, object]
     ) -> ToolExecutionResult:
         content = f"KeyError: unknown tool: {name}"
-        classification = self._failure_classifier.classify(name, content, is_error=True)
         return ToolExecutionResult(
             name=name,
             arguments=arguments,
             content=content,
             is_error=True,
-            failure_kind=classification.kind,
-            retryable=classification.retryable,
-            repair_guidance=classification.repair_guidance,
+            failure_kind=FailureKind.TOOL_PROTOCOL_ERROR,
+            retryable=False,
+            repair_guidance="The model requested a tool outside the declared capability surface.",
         )
 
     def _duplicate_read_result(
@@ -497,6 +509,47 @@ class ToolRuntime:
             suppressed=True,
             metadata={"signature": signature, "duplicate": True},
         )
+
+    def _overlapping_read_result(
+        self,
+        name: str,
+        arguments: dict[str, object],
+        spec: ToolSpec,
+    ) -> ToolExecutionResult | None:
+        if name != "read_file":
+            return None
+        requested = _read_range(arguments)
+        if requested is None:
+            return None
+        path_key = _read_path_key(self.context, arguments)
+        prior_ranges = self._recent_read_ranges.get(path_key, [])
+        for start, end in prior_ranges:
+            if start <= requested[1] and requested[0] <= end:
+                return ToolExecutionResult(
+                    name=name,
+                    arguments=arguments,
+                    content=(
+                        f"read_file range {requested[0]}-{requested[1]} overlaps an already "
+                        f"inspected range {start}-{end} for {path_key}. Reuse the prior result; "
+                        "use grep_search or parse_ast for a new symbol instead of rereading it."
+                    ),
+                    is_error=False,
+                    permission=spec.required_permission,
+                    risk=spec.risk,
+                    suppressed=True,
+                    metadata={"overlap": True, "path": path_key, "prior_range": f"{start}-{end}"},
+                )
+        return None
+
+    def _remember_read_range(self, arguments: dict[str, object]) -> None:
+        requested = _read_range(arguments)
+        if requested is None:
+            return
+        path_key = _read_path_key(self.context, arguments)
+        ranges = self._recent_read_ranges.setdefault(path_key, [])
+        ranges.append(requested)
+        del ranges[:-_MAX_RECENT_READ_RANGES_PER_FILE]
+        self._recent_read_ranges.move_to_end(path_key)
 
     def _suppressed_failure_result(
         self,
@@ -587,6 +640,7 @@ class ToolRuntime:
     ) -> None:
         if spec.required_permission != ToolPermission.READ:
             self._recent_success.clear()
+            self._recent_read_ranges.clear()
         if not result.is_error:
             if spec.required_permission == ToolPermission.READ:
                 self._recent_success[signature] = True
@@ -760,6 +814,26 @@ def _cap_timeout(
     return capped
 
 
+def _read_range(arguments: Mapping[str, object]) -> tuple[int, int] | None:
+    """Return an explicit read span so overlapping inspections can be bounded."""
+    if "start_line" not in arguments and "max_lines" not in arguments:
+        return None
+    try:
+        start = max(1, int(arguments.get("start_line") or 1))
+        length = max(1, int(arguments.get("max_lines") or 200))
+    except (TypeError, ValueError):
+        return None
+    return start, start + length - 1
+
+
+def _read_path_key(context: ToolContext, arguments: Mapping[str, object]) -> str:
+    raw_path = str(arguments.get("path", ""))
+    try:
+        return context.resolve_workspace_path(raw_path).relative_to(context.workspace).as_posix()
+    except (OSError, ValueError, WorkspaceViolation):
+        return raw_path.replace("\\", "/")
+
+
 def _run_execution_tool(
     tool: Tool,
     arguments: dict[str, object],
@@ -812,6 +886,8 @@ def _classify_worker_outcome(
         return classifier.classify_exception(WorkspaceViolation(outcome.content), name)
     if outcome.error_type == "TimeoutExpired":
         return classifier.classify_exception(subprocess.TimeoutExpired(name, 0), name)
+    if outcome.error_type == "SandboxUnavailable":
+        return classifier.classify_exception(SandboxUnavailable(outcome.content), name)
     return classifier.classify(name, outcome.content, is_error=is_error)
 
 

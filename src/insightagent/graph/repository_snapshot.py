@@ -72,9 +72,10 @@ def _list_repository_files(root: Path, max_files: int) -> list[Path]:
                 results.append(path.relative_to(root))
             except ValueError:
                 continue
-            if len(results) >= max_files:
-                return results
-    return results
+    # Put implementation files ahead of tests and documentation so a bounded
+    # snapshot still exposes the likely repair surface in large repositories.
+    results.sort(key=lambda path: (_snapshot_priority(path), path.as_posix()))
+    return results[:max_files]
 
 
 def _count_repository_files(root: Path, limit: int) -> int:
@@ -93,6 +94,17 @@ def _count_repository_files(root: Path, limit: int) -> int:
 def _format_file(path: Path) -> str:
     text = path.as_posix()
     return f"{text} [test]" if is_test_file_path(text) else text
+
+
+def _snapshot_priority(path: Path) -> int:
+    text = path.as_posix()
+    if is_test_file_path(text):
+        return 3
+    if path.suffix == ".py":
+        return 0
+    if path.name in {"pyproject.toml", "setup.cfg", "setup.py", "tox.ini", "pytest.ini"}:
+        return 1
+    return 2
 
 
 def _should_ignore_file(filename: str) -> bool:

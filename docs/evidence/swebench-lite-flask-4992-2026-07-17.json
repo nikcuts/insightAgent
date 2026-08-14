@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "dataset": "official SWE-bench-Lite",
+  "case_id": "pallets__flask-4992",
+  "issue": "Add a file mode parameter to flask.Config.from_file()",
+  "scope": "one real repository case; not a generalization claim",
+  "provider": "openai-compatible",
+  "model": "glm-5.2",
+  "python": "3.11",
+  "baseline_exit_code": 1,
+  "fail_to_pass_tests": 1,
+  "verification_command": "python -m pytest -q tests/test_config.py::test_config_from_file_toml",
+  "attempts": [
+    {
+      "run_id": "real-swebench-flask4992-glm-r5-20260717",
+      "status": "agent_error",
+      "root_cause": "agent produced a passing source patch but repeated inspection until the iteration limit",
+      "source_files_changed": ["src/flask/config.py"],
+      "verification_exit_code": 0,
+      "trace_status": "available",
+      "usage_total_tokens": 115531
+    },
+    {
+      "run_id": "real-swebench-flask4992-glm-r6-20260717",
+      "status": "agent_error",
+      "root_cause": "a code-edit mismatch was treated as a failed verification and the repair budget was exhausted",
+      "source_files_changed": [],
+      "trace_status": "available",
+      "usage_total_tokens": 66655
+    },
+    {
+      "run_id": "real-swebench-flask4992-glm-r7-20260717",
+      "status": "resolved",
+      "source_files_changed": ["src/flask/config.py"],
+      "test_files_changed": [],
+      "verification_exit_code": 0,
+      "phase_history": ["plan", "inspect", "implement", "repair", "verify", "summarize", "done"],
+      "tool_events": 18,
+      "suppressed_duplicate_events": 1,
+      "trace_status": "available",
+      "usage_total_tokens": 97557
+    }
+  ],
+  "counted_as_resolved": true,
+  "report": "reports/swe_style/real-swebench-flask4992-glm-r7-20260717/20260717-031008/summary.md",
+  "trace": "reports/swe_style/real-swebench-flask4992-glm-r7-20260717/20260717-031008/pallets__flask-4992.trace.jsonl"
+}

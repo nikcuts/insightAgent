@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "dataset": "tests/fixtures/swe_style/cases.jsonl",
+  "provider": "siliconflow",
+  "run_mode": "real_model",
+  "scope": "four local cases; not a generalization claim",
+  "total_cases": 4,
+  "evaluable_cases": 4,
+  "resolved_cases": 4,
+  "resolution_rate": 1.0,
+  "all_baselines_exit_code": 1,
+  "test_files_changed": 0,
+  "traces_available": 4,
+  "agent_duration_seconds_total": 82.66,
+  "total_tokens": 46189,
+  "cases": [
+    {
+      "id": "local_calc_addition",
+      "baseline_exit_code": 1,
+      "verification_exit_code": 0,
+      "resolved": true,
+      "source_files_changed": ["calc.py"],
+      "patch_lines_added": 1,
+      "patch_lines_removed": 1,
+      "agent_duration_seconds": 19.106,
+      "total_tokens": 9072,
+      "trace_status": "available"
+    },
+    {
+      "id": "local_slugify_trim",
+      "baseline_exit_code": 1,
+      "verification_exit_code": 0,
+      "resolved": true,
+      "source_files_changed": ["slugify.py"],
+      "patch_lines_added": 1,
+      "patch_lines_removed": 1,
+      "agent_duration_seconds": 31.168,
+      "total_tokens": 18869,
+      "trace_status": "available"
+    },
+    {
+      "id": "local_config_deep_merge",
+      "baseline_exit_code": 1,
+      "verification_exit_code": 0,
+      "resolved": true,
+      "source_files_changed": ["config.py"],
+      "patch_lines_added": 9,
+      "patch_lines_removed": 1,
+      "agent_duration_seconds": 13.601,
+      "total_tokens": 9451,
+      "trace_status": "available"
+    },
+    {
+      "id": "local_json_lines_blank",
+      "baseline_exit_code": 1,
+      "verification_exit_code": 0,
+      "resolved": true,
+      "source_files_changed": ["records.py"],
+      "patch_lines_added": 1,
+      "patch_lines_removed": 1,
+      "agent_duration_seconds": 18.786,
+      "total_tokens": 8797,
+      "trace_status": "available"
+    }
+  ],
+  "report_paths": [
+    "reports/swe_style/real-local-calc-20260717/summary.md",
+    "reports/swe_style/real-local-remaining-20260717/summary.md"
+  ]
+}

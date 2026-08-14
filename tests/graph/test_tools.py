@@ -55,6 +55,48 @@ def test_builtin_tools_are_typed_langchain_tools(tmp_path: Path) -> None:
     assert (tmp_path / "a.py").read_text(encoding="utf-8") == "x = 1\n"
 
 
+def test_search_tools_accept_nullable_optional_limits(tmp_path: Path) -> None:
+    (tmp_path / "module.py").write_text("needle = True\n", encoding="utf-8")
+    tools = {
+        tool.name: tool for tool in build_builtin_tools(ToolContext(workspace=tmp_path))
+    }
+
+    grep_payload = tools["grep_search"].invoke(
+        {"pattern": "needle", "glob": "*.py", "max_results": None}
+    )
+    glob_payload = tools["glob_search"].invoke(
+        {"pattern": "*.py", "max_results": None}
+    )
+
+    assert grep_payload["is_error"] is False
+    assert "module.py:1:needle = True" in grep_payload["content"]
+    assert glob_payload["is_error"] is False
+    assert "module.py" in glob_payload["content"]
+
+
+def test_search_tools_ignore_dependency_and_runtime_directories(tmp_path: Path) -> None:
+    (tmp_path / ".venv" / "lib").mkdir(parents=True)
+    (tmp_path / ".venv" / "lib" / "dependency.py").write_text(
+        "needle = 'dependency'\n", encoding="utf-8"
+    )
+    (tmp_path / ".insightagent").mkdir()
+    (tmp_path / ".insightagent" / "runtime.py").write_text(
+        "needle = 'runtime'\n", encoding="utf-8"
+    )
+    (tmp_path / "src.py").write_text("needle = 'source'\n", encoding="utf-8")
+    tools = {
+        tool.name: tool for tool in build_builtin_tools(ToolContext(workspace=tmp_path))
+    }
+
+    grep_payload = tools["grep_search"].invoke({"pattern": "needle", "glob": "*.py"})
+    glob_payload = tools["glob_search"].invoke({"pattern": "**/*.py"})
+
+    assert "src.py:1:needle" in grep_payload["content"]
+    assert "dependency.py" not in grep_payload["content"]
+    assert "runtime.py" not in grep_payload["content"]
+    assert glob_payload["content"] == "src.py"
+
+
 def test_structured_parse_ast_preserves_python_structure(tmp_path: Path) -> None:
     source = tmp_path / "package" / "sample.py"
     source.parent.mkdir()
@@ -329,6 +371,26 @@ def test_read_only_policy_returns_model_visible_permission_error(
     assert "PermissionDenied" in result.content
 
 
+def test_repeated_policy_denial_is_suppressed_without_execution(
+    tmp_path: Path,
+) -> None:
+    runtime = ToolRuntime(ToolContext(workspace=tmp_path, permission_mode="read-only"))
+
+    first = runtime.invoke(
+        "write_file", {"path": "a.py", "content": "x = 1\n"}, remaining_seconds=5.0
+    )
+    second = runtime.invoke(
+        "write_file", {"path": "a.py", "content": "x = 1\n"}, remaining_seconds=5.0
+    )
+
+    assert first.failure_kind == "permission_denied"
+    assert first.suppressed is False
+    assert second.failure_kind == "permission_denied"
+    assert second.suppressed is True
+    assert second.repeat_count == 1
+    assert not (tmp_path / "a.py").exists()
+
+
 def test_read_only_tool_result_is_deduplicated(tmp_path: Path) -> None:
     (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
     runtime = ToolRuntime(ToolContext(workspace=tmp_path))
@@ -339,6 +401,44 @@ def test_read_only_tool_result_is_deduplicated(tmp_path: Path) -> None:
     assert first.is_error is False
     assert second.suppressed is True
     assert second.metadata["duplicate"] is True
+
+
+def test_overlapping_read_ranges_are_suppressed_to_prevent_inspection_loops(
+    tmp_path: Path,
+) -> None:
+    source = "\n".join(f"line {index}" for index in range(1, 500))
+    (tmp_path / "module.py").write_text(source, encoding="utf-8")
+    runtime = ToolRuntime(ToolContext(workspace=tmp_path))
+
+    first = runtime.invoke(
+        "read_file",
+        {"path": "module.py", "start_line": 1, "max_lines": 250},
+        remaining_seconds=5.0,
+    )
+    overlapping = runtime.invoke(
+        "read_file",
+        {"path": "module.py", "start_line": 80, "max_lines": 40},
+        remaining_seconds=5.0,
+    )
+
+    assert first.is_error is False
+    assert overlapping.is_error is False
+    assert overlapping.suppressed is True
+    assert overlapping.metadata["overlap"] is True
+    assert "grep_search" in overlapping.content
+
+
+def test_host_workspace_alias_maps_container_path_to_real_workspace(tmp_path: Path) -> None:
+    runtime = ToolRuntime(ToolContext(workspace=tmp_path))
+
+    result = runtime.invoke(
+        "execute_command",
+        {"command": "cd /workspace && pwd"},
+        remaining_seconds=5.0,
+    )
+
+    assert result.is_error is False
+    assert str(tmp_path) in result.content
 
 
 def test_permanent_read_failure_is_suppressed_after_the_first_attempt(
@@ -556,6 +656,22 @@ def test_runtime_executes_shell_tools_without_a_generic_tool_worker(
     assert result.is_error is False
 
 
+def test_workspace_snapshot_ignores_runtime_session_storage(tmp_path: Path) -> None:
+    from insightagent.graph.tools import _capture_workspace
+
+    runtime_dir = tmp_path / ".insightagent"
+    runtime_dir.mkdir()
+    (runtime_dir / "checkpoints.sqlite3-wal").write_text("runtime", encoding="utf-8")
+    (tmp_path / "source.py").write_text("x = 1\n", encoding="utf-8")
+
+    files, directories, special_paths = _capture_workspace(tmp_path)
+
+    assert "source.py" in files
+    assert ".insightagent/checkpoints.sqlite3-wal" not in files
+    assert ".insightagent" not in directories
+    assert not any(path.startswith(".insightagent/") for path in special_paths)
+
+
 def test_direct_command_timeout_reclaims_the_shell_process_tree(tmp_path: Path) -> None:
     child_pid_path = tmp_path / "child.pid"
     child_code = "import time; time.sleep(30)"
@@ -602,6 +718,25 @@ def test_direct_timeout_kills_child_that_ignores_sigterm(tmp_path: Path) -> None
     finally:
         if child_pid_path.is_file():
             _kill_if_running(int(child_pid_path.read_text(encoding="utf-8")))
+
+
+def test_sandbox_mode_fails_closed_when_docker_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from insightagent.runtime.failure_classifier import FailureKind
+
+    monkeypatch.setattr("insightagent.tools.execution_tools.shutil.which", lambda _name: None)
+    runtime = ToolRuntime(
+        ToolContext(workspace=tmp_path, execution_mode="sandbox")
+    )
+
+    result = runtime.invoke(
+        "execute_command", {"command": "echo should-not-run"}, remaining_seconds=5.0
+    )
+
+    assert result.is_error is True
+    assert result.failure_kind == FailureKind.SANDBOX_UNAVAILABLE
+    assert "host execution was not attempted" in result.content
 
 
 def _process_is_gone(pid: int) -> bool:

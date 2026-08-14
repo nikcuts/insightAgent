@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "dataset": "tests/fixtures/swe_style/cases.jsonl",
+  "verification_command": "python -m unittest discover -s . -v",
+  "run_mode": "dry-run baseline only",
+  "counts_are_not_agent_scores": true,
+  "cases": [
+    {
+      "id": "local_calc_addition",
+      "baseline_exit_code": 1,
+      "failure_mode": "assertion_failure",
+      "tests_run": 3,
+      "tests_failed": 1
+    },
+    {
+      "id": "local_slugify_trim",
+      "baseline_exit_code": 1,
+      "failure_mode": "assertion_failure",
+      "tests_run": 2,
+      "tests_failed": 1
+    },
+    {
+      "id": "local_config_deep_merge",
+      "baseline_exit_code": 1,
+      "failure_mode": "assertion_failure",
+      "tests_run": 1,
+      "tests_failed": 1
+    },
+    {
+      "id": "local_json_lines_blank",
+      "baseline_exit_code": 1,
+      "failure_mode": "runtime_error",
+      "tests_run": 1,
+      "tests_failed": 1
+    }
+  ]
+}

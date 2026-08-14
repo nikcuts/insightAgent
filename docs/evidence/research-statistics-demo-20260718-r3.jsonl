@@ -1,0 +1,2 @@
+{"type": "decision", "name": "phase_transition", "payload": {"from_phase": "plan", "phase": "inspect", "node": "prepare_task"}}
+{"type": "decision", "name": "model_request", "payload": {"message_count": 2, "content_chars": 2056, "tool_message_count": 0, "fallback": false}}

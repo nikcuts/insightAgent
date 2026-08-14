@@ -1,0 +1,16 @@
+{
+  "experiment": "approval_interrupt_resume",
+  "date": "2026-07-17",
+  "command": "uv run pytest -q tests/graph/test_workflow.py::test_high_risk_tool_is_paused_and_resumed_without_replaying_side_effect tests/graph/test_runner.py::test_graph_runner_resumes_a_persisted_tool_approval",
+  "status": "passed",
+  "assertions": [
+    "write tool exposes tool name, sanitized arguments, permission and risk before execution",
+    "approval interrupt leaves the workspace unchanged",
+    "resume uses the same thread and executes the approved side effect once",
+    "run manifest records run_id, policy version, approval history and completion status"
+  ],
+  "limitations": [
+    "CLI/local session only; no service approval API or signed approver identity",
+    "approval_mode defaults to deny"
+  ]
+}

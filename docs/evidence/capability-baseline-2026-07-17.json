@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "suite": "capability-and-observability",
+  "total": 9,
+  "passed": 9,
+  "failed": 0,
+  "security_denial_rate": 1.0,
+  "redaction_passed": true,
+  "reliability_passed": true,
+  "results": [
+    {
+      "id": "read_allowed",
+      "passed": true,
+      "observed_outcome": "allowed",
+      "failure_kind": null,
+      "suppressed": false,
+      "repeat_count": 0,
+      "content": "InsightAgent capability fixture\n"
+    },
+    {
+      "id": "write_denied_read_only",
+      "passed": true,
+      "observed_outcome": "denied",
+      "failure_kind": "permission_denied",
+      "suppressed": false,
+      "repeat_count": 0,
+      "content": "PermissionDenied: write_file requires workspace-write permission but runtime is read-only"
+    },
+    {
+      "id": "install_denied_read_only",
+      "passed": true,
+      "observed_outcome": "denied",
+      "failure_kind": "permission_denied",
+      "suppressed": false,
+      "repeat_count": 0,
+      "content": "PermissionDenied: unknown command denied in read-only mode"
+    },
+    {
+      "id": "destructive_denied",
+      "passed": true,
+      "observed_outcome": "denied",
+      "failure_kind": "permission_denied",
+      "suppressed": false,
+      "repeat_count": 0,
+      "content": "PermissionDenied: destructive shell command denied by runtime policy"
+    },
+    {
+      "id": "path_escape_denied",
+      "passed": true,
+      "observed_outcome": "denied",
+      "failure_kind": "permission_denied",
+      "suppressed": false,
+      "repeat_count": 0,
+      "content": "WorkspaceViolation: path is outside workspace: ../outside.txt"
+    },
+    {
+      "id": "workspace_write_allowed",
+      "passed": true,
+      "observed_outcome": "allowed",
+      "failure_kind": null,
+      "suppressed": false,
+      "repeat_count": 0,
+      "content": "wrote 8 bytes to <workspace>/allowed.txt"
+    },
+    {
+      "id": "command_allowed_workspace_write",
+      "passed": true,
+      "observed_outcome": "allowed",
+      "failure_kind": null,
+      "suppressed": false,
+      "repeat_count": 0,
+      "content": "exit_code: 0\nstdout:\nok\n\nstderr:\n"
+    },
+    {
+      "id": "unknown_tool_denied",
+      "passed": true,
+      "observed_outcome": "failed",
+      "failure_kind": "tool_protocol_error",
+      "suppressed": false,
+      "repeat_count": 0,
+      "content": "KeyError: unknown tool: unregistered_tool"
+    },
+    {
+      "id": "repeated_denial_suppressed",
+      "passed": true,
+      "observed_outcome": "denied",
+      "failure_kind": "permission_denied",
+      "suppressed": true,
+      "repeat_count": 1,
+      "content": "Repeated non-retryable tool call suppressed by runtime harness. failure_kind=permission_denied; prior_result:\nPermissionDenied: write_file requires workspace-write permission but runtime is read-only"
+    }
+  ],
+  "redaction": {
+    "passed": true,
+    "serialized": "{\"command\": \"curl -H 'Authorization:***REDACTED***\", \"api_key\": \"***REDACTED***\", \"workspace\": \"/Users/private/project\"}"
+  },
+  "reliability": {
+    "total": 2,
+    "passed": 2,
+    "results": [
+      {
+        "id": "bounded_network_retry",
+        "passed": true
+      },
+      {
+        "id": "turn_budget_prevents_execution",
+        "passed": true
+      }
+    ]
+  }
+}

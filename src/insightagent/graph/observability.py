@@ -37,7 +37,16 @@ _AUTHORIZATION_HEADER = re.compile(
 )
 _COOKIE_HEADER = re.compile(r"(?i)\bcookie\s*[:=][^\r\n]*")
 _COMMAND_LINE_COOKIE = re.compile(
-    r"(?i)(?:--cookie|-b)(?:\s*=\s*|\s*)(?:\"[^\"]*\"|'[^']*'|[^\s;]+(?:\s*;\s*[^\s;]+)*)"
+    r"""(?ix)
+    (?<![A-Za-z0-9])
+    (?P<flag>--cookie|-b)
+    (?P<separator>\s*=\s*|\s*)
+    (?:
+        (?P<quoted_double>\"[^\"]*\")
+        |(?P<quoted_single>'[^']*')
+        |(?P<raw>[^\s;]+(?:\s*;\s*[^\s;]+)*)
+    )
+    """
 )
 _HIGH_ENTROPY_CREDENTIAL = re.compile(r"(?<![A-Za-z0-9_-])(?:sk|rk|lf|sf)-[A-Za-z0-9_-]{16,}")
 _CALLBACK_CONTROL_FIELDS = {"run_id", "parent_run_id"}
@@ -148,7 +157,7 @@ def sanitize_for_model_trace_and_persistence(value: object, *, max_chars: int = 
             sanitized_json = sanitize_for_model_trace_and_persistence(json_value, max_chars=max_chars)
             return _truncate(json.dumps(sanitized_json, ensure_ascii=False, default=str), max_chars)
         redacted = _AUTHORIZATION_HEADER.sub("Authorization: ***REDACTED***", value)
-        redacted = _COMMAND_LINE_COOKIE.sub("--cookie ***REDACTED***", redacted)
+        redacted = _COMMAND_LINE_COOKIE.sub(_redact_command_line_cookie, redacted)
         redacted = _COOKIE_HEADER.sub("Cookie: ***REDACTED***", redacted)
         redacted = _INLINE_SECRET.sub(
             lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}{match.group(4)}***REDACTED***",
@@ -167,6 +176,17 @@ def sanitize_for_model_trace_and_persistence(value: object, *, max_chars: int = 
 
 def _is_sensitive_key(key: str) -> bool:
     return not _TOKEN_USAGE_METADATA_KEY.fullmatch(key) and bool(_SENSITIVE_KEY.search(key))
+
+
+def _redact_command_line_cookie(match: re.Match[str]) -> str:
+    """Replace only the cookie value so source/code-shaped output stays parseable."""
+    if match.group("quoted_double") is not None:
+        value = '"***REDACTED***"'
+    elif match.group("quoted_single") is not None:
+        value = "'***REDACTED***'"
+    else:
+        value = "***REDACTED***"
+    return f"{match.group('flag')}{match.group('separator')}{value}"
 
 
 @dataclass
@@ -299,6 +319,7 @@ class GraphDebugRecorder:
             "last_tool_error": state.get("last_tool_error"),
             "final_answer": state.get("final_answer"),
             "usage": state.get("usage", {}),
+            "run_manifest": state.get("run_manifest", {}),
             "trace_id": trace_id,
         }
         sanitized = sanitize_for_model_trace_and_persistence(event, max_chars=self._max_chars)
@@ -355,6 +376,7 @@ def build_observability(
     provider: str,
     model: str,
     task: str = "",
+    run_id: str | None = None,
     tool_profile: str = "coding-basic",
     event_sink: GraphEventSink | None = None,
     trace_max_chars: int = 8_000,
@@ -370,6 +392,7 @@ def build_observability(
         )
     metadata: dict[str, object] = {
         "langfuse_session_id": thread_id,
+        "run_id": run_id or thread_id,
         "workspace": workspace,
         "provider": provider,
         "model": model,

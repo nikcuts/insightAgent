@@ -15,10 +15,20 @@ class WorkspaceViolation(RuntimeError):
     """Raised when a tool attempts to access a path outside the workspace."""
 
 
+class SandboxUnavailable(RuntimeError):
+    """Raised when sandbox mode is enabled but its runtime is unavailable."""
+
+
 @dataclass(frozen=True)
 class ToolContext:
     workspace: Path
     permission_mode: str = "workspace-write"
+    approval_mode: str = "deny"
+    execution_mode: str = "host"
+    sandbox_image: str = "python:3.11-slim"
+    sandbox_memory_mb: int = 512
+    sandbox_cpus: float = 1.0
+    sandbox_pids_limit: int = 128
     require_confirmation: bool = True
     max_read_chars: int = 500_000
     max_write_chars: int = 500_000
@@ -27,6 +37,14 @@ class ToolContext:
         object.__setattr__(self, "workspace", self.workspace.expanduser().resolve())
         if self.permission_mode not in {"read-only", "workspace-write"}:
             raise ValueError("permission_mode must be read-only or workspace-write")
+        if self.approval_mode not in {"deny", "interrupt"}:
+            raise ValueError("approval_mode must be deny or interrupt")
+        if self.execution_mode not in {"host", "sandbox"}:
+            raise ValueError("execution_mode must be host or sandbox")
+        if not self.sandbox_image.strip():
+            raise ValueError("sandbox_image must not be empty")
+        if self.sandbox_memory_mb < 64 or self.sandbox_cpus <= 0 or self.sandbox_pids_limit < 1:
+            raise ValueError("sandbox resource limits are invalid")
 
     @property
     def can_write(self) -> bool:

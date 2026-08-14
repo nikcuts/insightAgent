@@ -4,17 +4,22 @@ InsightAgent 通过官方 `langchain-mcp-adapters` 与 MCP SDK 接入 MCP server
 
 ## 配置位置
 
-MCP 配置按以下顺序合并，后读的同名 server 覆盖前面的字段：
+默认只读取用户级 MCP 配置：
 
 ```text
 ~/.insightagent/mcp_config.json
+```
+
+工作区和启动目录配置可能运行仓库提供的任意本地 command 或连接远程服务，只有显式传入 `--trust-workspace-mcp` 才会加入以下合并链，后读的同名 server 覆盖前面的字段：
+
+```text
 <start_dir>/.insightagent/mcp_config.json
 <start_dir>/mcp_config.json
 <workspace>/.insightagent/mcp_config.json
 <workspace>/mcp_config.json
 ```
 
-`<start_dir>` 是启动 `insightagent-run` 或 `insightagent` 时的当前目录。可用 `--config-home` 指定用户配置目录。
+`<start_dir>` 是启动 `insightagent-run` 或 `insightagent` 时的当前目录。可用 `--config-home` 指定用户配置目录。生产环境应使用管理员维护的用户级 manifest，不要把 `--trust-workspace-mcp` 当作部署安全策略。
 
 ```json
 {

@@ -1,0 +1,47 @@
+{
+  "scenario": "cross_module_runtime_regression",
+  "date": "2026-07-17",
+  "objective": "Use the real model configuration to validate security, snapshot hygiene, provenance, and regression verification in one task.",
+  "seeded_failures": [
+    "cookie redaction corrupted coding-basic and source-shaped command strings",
+    "runtime SQLite WAL files appeared in workspace snapshots",
+    "MODEL_ID was missing from run_manifest.model"
+  ],
+  "agent_runs": [
+    {
+      "session_id": "complex-production-regression-clean-20260717",
+      "status": "failed",
+      "failure_kinds": ["environment_error", "iteration_limit", "permission_denied", "test_failure", "tool_batch_aborted"],
+      "iterations": 20,
+      "tool_calls": 24,
+      "note": "The model spent the turn diagnosing sanitized source output and did not edit the seeded defects."
+    },
+    {
+      "session_id": "complex-production-regression-clean-retry-20260717",
+      "status": "failed",
+      "failure_kinds": ["environment_error", "iteration_limit", "permission_denied", "test_failure", "tool_batch_aborted"],
+      "iterations": 24,
+      "tool_calls": 39,
+      "note": "The model repeatedly inspected the same source after tests failed and reached the iteration limit."
+    },
+    {
+      "session_id": "complex-production-verification-git-20260717",
+      "status": "failed",
+      "failure_kinds": ["iteration_limit"],
+      "iterations": 8,
+      "tool_calls": 40,
+      "verification": "66 targeted tests passed and git diff --check passed; the model then repeated large source reads until the loop limit."
+    }
+  ],
+  "implemented_fixes": [
+    "preserve command flags and quote structure while redacting cookie values",
+    "ignore .insightagent runtime storage in workspace snapshots",
+    "fall back to MODEL_ID when the runtime model is not explicitly configured"
+  ],
+  "verification": {
+    "main_repository_tests": "290 passed",
+    "isolated_cross_module_tests": "64 passed",
+    "real_model": "glm-5.2 from .env",
+    "production_readiness": "not yet demonstrated for complex autonomous convergence"
+  }
+}

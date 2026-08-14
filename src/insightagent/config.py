@@ -24,6 +24,12 @@ class RuntimeConfig:
     max_tool_output_chars: int = 8000
     compact_tool_output_chars: int = 600
     permission_mode: str = "workspace-write"
+    approval_mode: str = "deny"
+    execution_mode: str = "host"
+    sandbox_image: str = "python:3.11-slim"
+    sandbox_memory_mb: int = 512
+    sandbox_cpus: float = 1.0
+    sandbox_pids_limit: int = 128
     trace_max_chars: int = 1000
     session_dir: str = ".insightagent/sessions"
     response_language: str = "auto"
@@ -123,6 +129,12 @@ def _config_from_dict(
             "compact_tool_output_chars", data.get("compact_tool_output_chars")
         ),
         "permission_mode": permissions.get("mode", data.get("permission_mode")),
+        "approval_mode": permissions.get("approval_mode", data.get("approval_mode")),
+        "execution_mode": permissions.get("execution_mode", data.get("execution_mode")),
+        "sandbox_image": runtime.get("sandbox_image", data.get("sandbox_image")),
+        "sandbox_memory_mb": runtime.get("sandbox_memory_mb", data.get("sandbox_memory_mb")),
+        "sandbox_cpus": runtime.get("sandbox_cpus", data.get("sandbox_cpus")),
+        "sandbox_pids_limit": runtime.get("sandbox_pids_limit", data.get("sandbox_pids_limit")),
         "trace_max_chars": tracing.get("max_chars", data.get("trace_max_chars")),
         "session_dir": sessions.get("dir", data.get("session_dir")),
         "response_language": runtime.get(
@@ -216,6 +228,12 @@ def _normalize_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
             )
         elif key == "permission_mode":
             normalized = _deep_merge(normalized, {"permissions": {"mode": value}})
+        elif key == "approval_mode":
+            normalized = _deep_merge(normalized, {"permissions": {"approval_mode": value}})
+        elif key == "execution_mode":
+            normalized = _deep_merge(normalized, {"permissions": {"execution_mode": value}})
+        elif key in {"sandbox_image", "sandbox_memory_mb", "sandbox_cpus", "sandbox_pids_limit"}:
+            normalized = _deep_merge(normalized, {"runtime": {key: value}})
         elif key == "trace_max_chars":
             normalized = _deep_merge(normalized, {"tracing": {"max_chars": value}})
         elif key == "session_dir":

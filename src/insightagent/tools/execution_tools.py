@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -14,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..runtime.tool_context import ToolContext
+from ..runtime.tool_context import SandboxUnavailable, ToolContext
 from .base import should_skip_path
 
 
@@ -63,13 +64,18 @@ class ExecuteCommandTool:
 
     def _run(self, arguments: dict[str, Any], turn_timeout: float | None) -> str:
         command = normalize_python_command(str(arguments["command"]))
+        if self.context.execution_mode == "host":
+            command = normalize_host_workspace_alias(command, self.context.workspace)
         self.context.check_bash_allowed(command)
         cwd = self.context.resolve_workspace_path(
             str(arguments.get("cwd") or self.context.workspace)
         )
         timeout = int(arguments.get("timeout", 60))
-        completed = run_shell_command(
-            command, cwd, _effective_timeout(timeout, turn_timeout)
+        effective_timeout = _effective_timeout(timeout, turn_timeout)
+        completed = (
+            run_sandbox_command(command, cwd, effective_timeout, self.context)
+            if self.context.execution_mode == "sandbox"
+            else run_shell_command(command, cwd, effective_timeout)
         )
         return (
             f"exit_code: {completed.returncode}\n"
@@ -157,8 +163,11 @@ class RunVerificationTool:
             )
         self.context.check_bash_allowed(command)
         timeout = int(arguments.get("timeout", 120))
-        completed = run_shell_command(
-            command, cwd, _effective_timeout(timeout, turn_timeout)
+        effective_timeout = _effective_timeout(timeout, turn_timeout)
+        completed = (
+            run_sandbox_command(command, cwd, effective_timeout, self.context)
+            if self.context.execution_mode == "sandbox"
+            else run_shell_command(command, cwd, effective_timeout)
         )
         return (
             f"exit_code: {completed.returncode}\n"
@@ -179,6 +188,7 @@ def run_shell_command(
         command,
         shell=True,
         cwd=str(cwd),
+        env=_workspace_environment(cwd),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -198,6 +208,83 @@ def run_shell_command(
         stdout=stdout,
         stderr=stderr,
     )
+
+
+def run_sandbox_command(
+    command: str,
+    cwd: Path,
+    timeout: float,
+    context: ToolContext,
+) -> subprocess.CompletedProcess[str]:
+    """Run a command in a disposable Docker container with no network access.
+
+    This is deliberately fail-closed: a missing Docker runtime raises instead
+    of silently executing the command with host privileges.
+    """
+    docker = shutil.which("docker")
+    if docker is None:
+        raise SandboxUnavailable(
+            "sandbox mode requires the Docker CLI; host execution was not attempted"
+        )
+    try:
+        relative_cwd = cwd.relative_to(context.workspace)
+    except ValueError as error:
+        raise SandboxUnavailable("sandbox cwd must be inside the workspace") from error
+    container_cwd = "/workspace"
+    if str(relative_cwd) != ".":
+        container_cwd += "/" + str(relative_cwd)
+    argv = [
+        docker,
+        "run",
+        "--rm",
+        "--network=none",
+        "--read-only",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        f"--pids-limit={context.sandbox_pids_limit}",
+        f"--memory={context.sandbox_memory_mb}m",
+        f"--cpus={context.sandbox_cpus:g}",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,size=64m",
+        "--volume",
+        f"{context.workspace}:/workspace:rw",
+        "--workdir",
+        container_cwd,
+        context.sandbox_image,
+        "/bin/sh",
+        "-lc",
+        command,
+    ]
+    environment = {"PATH": os.environ.get("PATH", "")}
+    process = subprocess.Popen(
+        argv,
+        cwd=str(context.workspace),
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(process)
+        stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(argv, timeout, output=stdout, stderr=stderr) from None
+    return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+
+
+def _workspace_environment(cwd: Path) -> dict[str, str]:
+    """Prefer the current checkout's ``src`` tree over installed packages."""
+    environment = os.environ.copy()
+    src_dir = cwd / "src"
+    if not src_dir.is_dir():
+        return environment
+    existing = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = (
+        str(src_dir) if not existing else f"{src_dir}{os.pathsep}{existing}"
+    )
+    return environment
 
 
 def _terminate_process_group(
@@ -224,6 +311,21 @@ def _effective_timeout(requested: int, turn_timeout: float | None) -> float:
     if turn_timeout is None:
         return float(requested)
     return min(float(requested), max(0.001, turn_timeout))
+
+
+def normalize_host_workspace_alias(command: str, workspace: Path) -> str:
+    """Translate common container workspace paths when running on the host.
+
+    Models sometimes retain ``/workspace`` from a container-oriented prompt. In
+    host mode that path is usually absent, so a deterministic alias keeps the
+    command inside the already-approved workspace instead of producing a
+    misleading environment failure. Sandbox commands intentionally keep the
+    container path unchanged.
+    """
+    if workspace == Path("/workspace") or Path("/workspace").exists():
+        return command
+    replacement = shlex.quote(str(workspace))
+    return re.sub(r"(?<![A-Za-z0-9_:/.-])/workspace(?=(?:/|\s|$))", replacement, command)
 
 
 def detect_verification_command(cwd: Path) -> tuple[str, str | None]:

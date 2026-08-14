@@ -13,6 +13,7 @@ from typing import Any, AsyncIterator, Awaitable, Mapping, TypeVar, cast
 from filelock import FileLock, Timeout
 from langchain_core.messages import BaseMessage
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
 
 from insightagent.graph.checkpoints import CheckpointStore, thread_lock_path, validate_thread_id
 from insightagent.graph.observability import sanitize_for_model_trace_and_persistence
@@ -85,6 +86,45 @@ class GraphSessionService:
             snapshot = await self._readable_snapshot(config)
             if snapshot is None:
                 raise RuntimeError("graph turn completed without a readable checkpoint")
+            await self._record_thread(validated_thread_id, resolved_workspace)
+            checkpoint_config = snapshot.config.get("configurable", {})
+            checkpoint_id = checkpoint_config.get("checkpoint_id")
+            return SessionTurn(
+                validated_thread_id,
+                state,
+                checkpoint_id if isinstance(checkpoint_id, str) else None,
+            )
+
+    async def resume_turn(
+        self,
+        thread_id: str,
+        workspace: str | Path,
+        resume_value: object,
+        *,
+        deadline_monotonic: float | None,
+        run_config: Mapping[str, object] | None = None,
+    ) -> SessionTurn:
+        """Resume a durable interrupt without replaying the original user turn."""
+        validated_thread_id = validate_thread_id(thread_id)
+        resolved_workspace = str(Path(workspace).expanduser().resolve())
+        async with self._thread_lock(validated_thread_id):
+            await self._validate_workspace_binding(validated_thread_id, resolved_workspace)
+            config = dict(run_config or {})
+            configured_values = config.get("configurable", {})
+            configurable = (
+                dict(configured_values) if isinstance(configured_values, Mapping) else {}
+            )
+            configurable["thread_id"] = validated_thread_id
+            if deadline_monotonic is not None:
+                configurable["insightagent_deadline_monotonic"] = deadline_monotonic
+            config["configurable"] = configurable
+            state = cast(
+                AgentState,
+                await self._graph.ainvoke(Command(resume=resume_value), config),
+            )
+            snapshot = await self._readable_snapshot(config)
+            if snapshot is None:
+                raise RuntimeError("graph resume completed without a readable checkpoint")
             await self._record_thread(validated_thread_id, resolved_workspace)
             checkpoint_config = snapshot.config.get("configurable", {})
             checkpoint_id = checkpoint_config.get("checkpoint_id")
@@ -309,6 +349,18 @@ def _render_transcript(thread_id: str, state: AgentState) -> str:
             f"- 工作区变更：{rendered_changed_files or '无'}",
         ]
     )
+    manifest = state.get("run_manifest", {})
+    if isinstance(manifest, Mapping) and manifest:
+        lines.extend(["", "## Run Manifest", "", "```json"])
+        lines.append(
+            json.dumps(
+                sanitize_for_model_trace_and_persistence(manifest),
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            )
+        )
+        lines.append("```")
     attempts = state.get("verification_attempts", [])
     if attempts:
         lines.extend(["", "## 验证记录", ""])

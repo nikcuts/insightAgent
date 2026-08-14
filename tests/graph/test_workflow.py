@@ -7,6 +7,8 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict
 
 from insightagent.graph.tools import ContractAwareToolInvoker
@@ -94,6 +96,222 @@ def test_workflow_records_all_node_phase_transitions(tmp_path: Path) -> None:
     assert ("inspect", "done") in observer.transitions
 
 
+def test_tool_event_distinguishes_policy_denial_from_execution_failure() -> None:
+    from insightagent.graph.nodes import _tool_event
+
+    event = _tool_event(
+        "execute_command",
+        {"command": "rm -rf workspace"},
+        {
+            "is_error": True,
+            "failure_kind": "permission_denied",
+            "content": "PermissionDenied: destructive command denied",
+        },
+        spec=_tool_spec("execute_command", executes=True),
+        tool_call_id="danger-1",
+    )
+
+    assert event["event_version"] == 1
+    assert event["tool_call_id"] == "danger-1"
+    assert event["permission"] == "execute"
+    assert event["risk"] == "high"
+    assert event["outcome"] == "denied"
+
+
+def test_verification_policy_mismatch_does_not_consume_repair_budget(tmp_path: Path) -> None:
+    from insightagent.graph.nodes import GraphServices, execute_tools, route_after_tools
+
+    invoked: list[str] = []
+
+    async def execute_command(command: str) -> dict[str, object]:
+        invoked.append(command)
+        return {"is_error": False, "content": "exit_code: 0"}
+
+    execute_tool = StructuredTool(
+        name="execute_command",
+        description="Execute a command.",
+        args_schema=_VerificationArguments,
+        coroutine=execute_command,
+    )
+    context = ToolContext(workspace=tmp_path)
+    services = GraphServices(
+        model=ScriptedRunnable([]),
+        tools={"execute_command": execute_tool},
+        tool_specs={"execute_command": _tool_spec("execute_command", executes=True)},
+        tool_context=context,
+        tool_invoker=ContractAwareToolInvoker(context),
+    )
+    state = services.initial_state(
+        "SWE-bench repository repair task. "
+        "Run this exact verification command before finalizing: python -m pytest -q"
+    )
+    state["phase"] = "inspect"
+    state["messages"] = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "execute_command",
+                    "args": {"command": "sed -n '1,80p' src/app.py"},
+                    "id": "inspect-via-shell",
+                }
+            ],
+        )
+    ]
+
+    update = asyncio.run(execute_tools(state, {}, services))
+
+    assert invoked == []
+    assert update["phase"] == "inspect"
+    assert route_after_tools({**state, **update}, services) == "call_model"
+    assert update["tool_events"][-1]["failure_kind"] == "verification_required"
+
+
+def test_inspection_budget_feedback_does_not_enter_repair_phase(tmp_path: Path) -> None:
+    from insightagent.graph.nodes import GraphServices, execute_tools, route_after_tools
+
+    async def read_file(path: str) -> dict[str, object]:
+        return {"is_error": False, "content": f"contents: {path}"}
+
+    read_tool = StructuredTool(
+        name="read_file",
+        description="Read a file.",
+        args_schema=_PathArguments,
+        coroutine=read_file,
+    )
+    context = ToolContext(workspace=tmp_path)
+    services = GraphServices(
+        model=ScriptedRunnable([]),
+        tools={"read_file": read_tool},
+        tool_specs={"read_file": _tool_spec("read_file")},
+        tool_context=context,
+        tool_invoker=ContractAwareToolInvoker(context),
+    )
+    state = services.initial_state(
+        "SWE-bench repository repair task. Run this exact verification command before finalizing: pytest -q"
+    )
+    state.update(
+        {
+            "phase": "inspect",
+            "tool_events": [
+                {
+                    "tool": "read_file",
+                    "suppressed": False,
+                    "is_error": False,
+                }
+                for _ in range(8)
+            ],
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "read_file", "args": {"path": "tests/app.py"}, "id": "read-after-budget"}
+                    ],
+                )
+            ],
+        }
+    )
+
+    update = asyncio.run(execute_tools(state, {}, services))
+
+    assert update["phase"] == "implement"
+    assert route_after_tools({**state, **update}, services) == "call_model"
+    assert update["tool_events"][-1]["failure_kind"] == "inspection_budget_exceeded"
+
+
+def test_inspection_budget_still_allows_targeted_source_read(tmp_path: Path) -> None:
+    from insightagent.graph.nodes import _is_targeted_implementation_inspection
+
+    assert _is_targeted_implementation_inspection(
+        "read_file", {"path": "src/app.py", "start_line": 1, "max_lines": 20}
+    )
+    assert _is_targeted_implementation_inspection(
+        "grep_search", {"glob": "tests/test_app.py", "pattern": "def test_bug"}
+    )
+
+
+def test_prepare_task_injects_repository_tool_contract(tmp_path: Path) -> None:
+    from insightagent.graph.nodes import GraphServices, prepare_task
+
+    context = ToolContext(workspace=tmp_path)
+    services = GraphServices(
+        model=ScriptedRunnable([]),
+        tools={},
+        tool_specs={},
+        tool_context=context,
+        tool_invoker=ContractAwareToolInvoker(context),
+    )
+
+    update = asyncio.run(
+        prepare_task(
+            services.initial_state(
+                "SWE-bench repository repair task. "
+                "Run this exact verification command before finalizing: pytest -q"
+            ),
+            {},
+            services,
+        )
+    )
+
+    system_message = update["messages"][0]
+    assert "禁止用 execute_command 查看或打印源码" in system_message.content
+    assert "pytest -q" in system_message.content
+    assert str(tmp_path.resolve()) in system_message.content
+    assert "/workspace" in system_message.content
+
+
+def test_high_risk_tool_is_paused_and_resumed_without_replaying_side_effect(
+    tmp_path: Path,
+) -> None:
+    from insightagent.graph.nodes import GraphServices
+    from insightagent.graph.tools import ToolRuntime, build_builtin_tools
+    from insightagent.graph.workflow import build_graph
+
+    target = tmp_path / "note.txt"
+    target.write_text("before", encoding="utf-8")
+    context = ToolContext(workspace=tmp_path, approval_mode="interrupt")
+    runtime = ToolRuntime(context)
+    tools = build_builtin_tools(context, runtime)
+    services = GraphServices(
+        model=ScriptedRunnable(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "edit_file",
+                            "args": {"path": "note.txt", "old": "before", "new": "after"},
+                            "id": "approval-edit-1",
+                        }
+                    ],
+                ),
+                AIMessage(content="已完成修改。"),
+            ]
+        ),
+        tools={tool.name: tool for tool in tools},
+        tool_specs=runtime.specs(),
+        tool_context=context,
+        tool_invoker=ContractAwareToolInvoker(context),
+        max_iterations=4,
+    )
+    graph = build_graph(services, checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": "approval-thread"}}
+
+    first = asyncio.run(graph.ainvoke(services.initial_state("修改 note.txt"), config))
+
+    assert "__interrupt__" in first
+    interrupt_payload = first["__interrupt__"][0].value
+    assert interrupt_payload["type"] == "tool_approval"
+    assert interrupt_payload["tools"][0]["tool"] == "edit_file"
+    assert target.read_text(encoding="utf-8") == "before"
+
+    resumed = asyncio.run(graph.ainvoke(Command(resume="approve"), config))
+
+    assert resumed["phase"] == "done"
+    assert target.read_text(encoding="utf-8") == "after"
+    assert len([message for message in services.model.ainvoke_inputs if message]) == 2
+
+
 def test_model_call_places_system_context_before_user_messages(tmp_path: Path) -> None:
     from insightagent.graph.nodes import GraphServices, call_model
 
@@ -118,6 +336,252 @@ def test_model_call_places_system_context_before_user_messages(tmp_path: Path) -
     request = model.ainvoke_inputs[0]
     assert [message.type for message in request] == ["system", "human"]
     assert [message.content for message in request] == ["任务约束\n\n仓库快照", "分析仓库"]
+
+
+def test_model_context_error_retries_with_latest_tool_group_and_resets_history(
+    tmp_path: Path,
+) -> None:
+    from insightagent.graph.nodes import GraphServices, call_model
+
+    class Observer(_PhaseObserver):
+        def __init__(self) -> None:
+            super().__init__()
+            self.decisions: list[tuple[str, dict[str, object]]] = []
+
+        def record_decision(self, name: str, payload: dict[str, object]) -> None:
+            self.decisions.append((name, payload))
+
+    class ContextFailingRunnable(ScriptedRunnable):
+        async def ainvoke(self, input: object, config: object = None, **kwargs: object) -> AIMessage:
+            self.ainvoke_inputs.append(input)
+            self.ainvoke_configs.append(config)  # type: ignore[arg-type]
+            self.ainvoke_kwargs.append(dict(kwargs))
+            if len(self.ainvoke_inputs) == 1:
+                raise ValueError("messages 参数非法。请检查文档。")
+            return AIMessage(content="继续处理", tool_calls=[])
+
+    observer = Observer()
+    model = ContextFailingRunnable([])
+    context = ToolContext(workspace=tmp_path)
+    services = GraphServices(
+        model=model,
+        tools={},
+        tool_specs={},
+        tool_context=context,
+        tool_invoker=ContractAwareToolInvoker(context),
+        observability=observer,  # type: ignore[arg-type]
+    )
+    state = services.initial_state("修复仓库")
+    state["messages"] = [
+        HumanMessage(content="修复仓库"),
+        SystemMessage(content="约束"),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "read_file", "args": {"path": "a.py"}, "id": "old-call"}],
+        ),
+        ToolMessage(content='{"content":"最新结果"}', tool_call_id="old-call"),
+    ]
+
+    result = asyncio.run(call_model(state, {}, services))
+
+    assert len(model.ainvoke_inputs) == 2
+    fallback_request = model.ainvoke_inputs[1]
+    assert [message.type for message in fallback_request] == ["system", "human", "ai", "tool"]
+    assert result["messages"][-1].content == "继续处理"
+    assert any(name == "model_context_recovery" for name, _ in observer.decisions)
+
+
+def test_successful_verification_stops_post_verify_inspection_loop(tmp_path: Path) -> None:
+    from insightagent.graph.nodes import GraphServices, route_after_tools, summarize
+
+    context = ToolContext(workspace=tmp_path)
+    services = GraphServices(
+        model=ScriptedRunnable([]),
+        tools={},
+        tool_specs={},
+        tool_context=context,
+        tool_invoker=ContractAwareToolInvoker(context),
+    )
+    state = services.initial_state(
+        "修复 src/app.py。Run this exact verification command before finalizing: pytest -q"
+    )
+    state.update(
+        {
+            "phase": "verify",
+            "changed_files": ["src/app.py"],
+            "workspace_revision": 1,
+            "verified_workspace_revision": 1,
+            "verification_attempts": [{"command": "pytest -q", "exit_code": 0, "workspace_revision": 1}],
+            "messages": [
+                *state["messages"],
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "read_file", "args": {"path": "src/app.py"}, "id": "read-after"}],
+                ),
+            ],
+        }
+    )
+
+    assert route_after_tools(state, services) == "summarize"
+    result = asyncio.run(summarize(state, {}, services))
+    assert result["phase"] == "done"
+    assert "src/app.py" in result["final_answer"]
+    assert "pytest -q" in result["final_answer"]
+
+
+def test_last_iteration_patch_is_auto_verified(tmp_path: Path) -> None:
+    from insightagent.graph.nodes import GraphServices
+    from insightagent.graph.workflow import build_graph
+
+    source = tmp_path / "src" / "calc.py"
+    source.parent.mkdir()
+    source.write_text("VALUE = 0\n", encoding="utf-8")
+    invoked: list[str] = []
+
+    async def edit_file(path: str, old: str, new: str) -> dict[str, object]:
+        target = tmp_path / path
+        target.write_text(target.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+        return {"is_error": False, "content": "edited"}
+
+    async def run_verification(command: str) -> dict[str, object]:
+        invoked.append(command)
+        return {"is_error": False, "content": "exit_code: 0\npassed"}
+
+    edit_tool = StructuredTool(
+        name="edit_file",
+        description="Edit a file.",
+        args_schema=_EditArguments,
+        coroutine=edit_file,
+    )
+    verification_tool = StructuredTool(
+        name="run_verification",
+        description="Run verification.",
+        args_schema=_VerificationArguments,
+        coroutine=run_verification,
+    )
+    context = ToolContext(workspace=tmp_path)
+    services = GraphServices(
+        model=ScriptedRunnable(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "edit_file",
+                            "args": {"path": "src/calc.py", "old": "VALUE = 0", "new": "VALUE = 1"},
+                            "id": "edit-last",
+                        }
+                    ],
+                )
+            ]
+        ),
+        tools={"edit_file": edit_tool, "run_verification": verification_tool},
+        tool_specs={
+            "edit_file": _tool_spec("edit_file", mutates=True),
+            "run_verification": _tool_spec("run_verification", executes=True),
+        },
+        tool_context=context,
+        tool_invoker=ContractAwareToolInvoker(context),
+        max_iterations=1,
+    )
+
+    result = asyncio.run(
+        build_graph(services).ainvoke(
+            services.initial_state(
+                "修复 src/calc.py。Run this exact verification command before finalizing: pytest -q"
+            ),
+            {"configurable": {"thread_id": "auto-verify-last-iteration"}},
+        )
+    )
+
+    assert result["phase"] == "done"
+    assert invoked == ["pytest -q"]
+    assert result["verification_attempts"][-1]["exit_code"] == 0
+    assert result["verification_attempts"][-1]["auto"] is True
+    assert result["tool_events"][-1]["tool"] == "run_verification"
+    assert result["tool_events"][-1]["metadata"] == {"auto": True, "reason": "iteration_limit"}
+    assert source.read_text(encoding="utf-8") == "VALUE = 1\n"
+
+
+def test_failed_last_iteration_verification_gets_a_bounded_repair_turn(tmp_path: Path) -> None:
+    from insightagent.graph.nodes import GraphServices
+    from insightagent.graph.workflow import build_graph
+
+    source = tmp_path / "src" / "calc.py"
+    source.parent.mkdir()
+    source.write_text("VALUE = 0\n", encoding="utf-8")
+    outcomes = ["exit_code: 1\nfailed", "exit_code: 0\npassed"]
+
+    async def edit_file(path: str, old: str, new: str) -> dict[str, object]:
+        target = tmp_path / path
+        target.write_text(target.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+        return {"is_error": False, "content": "edited"}
+
+    async def run_verification(command: str) -> dict[str, object]:
+        assert command == "pytest -q"
+        return {"is_error": False, "content": outcomes.pop(0)}
+
+    edit_tool = StructuredTool(
+        name="edit_file",
+        description="Edit a file.",
+        args_schema=_EditArguments,
+        coroutine=edit_file,
+    )
+    verification_tool = StructuredTool(
+        name="run_verification",
+        description="Run verification.",
+        args_schema=_VerificationArguments,
+        coroutine=run_verification,
+    )
+    context = ToolContext(workspace=tmp_path)
+    services = GraphServices(
+        model=ScriptedRunnable(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "edit_file",
+                            "args": {"path": "src/calc.py", "old": "VALUE = 0", "new": "VALUE = 1"},
+                            "id": "edit-first",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "edit_file",
+                            "args": {"path": "src/calc.py", "old": "VALUE = 1", "new": "VALUE = 2"},
+                            "id": "edit-repair",
+                        }
+                    ],
+                ),
+            ]
+        ),
+        tools={"edit_file": edit_tool, "run_verification": verification_tool},
+        tool_specs={
+            "edit_file": _tool_spec("edit_file", mutates=True),
+            "run_verification": _tool_spec("run_verification", executes=True),
+        },
+        tool_context=context,
+        tool_invoker=ContractAwareToolInvoker(context),
+        max_iterations=1,
+        max_repair_attempts=2,
+    )
+
+    result = asyncio.run(
+        build_graph(services).ainvoke(
+            services.initial_state(
+                "修复 src/calc.py。Run this exact verification command before finalizing: pytest -q"
+            ),
+            {"configurable": {"thread_id": "auto-verify-repair-turn"}},
+        )
+    )
+
+    assert result["phase"] == "done"
+    assert [attempt["exit_code"] for attempt in result["verification_attempts"]] == [1, 0]
+    assert source.read_text(encoding="utf-8") == "VALUE = 2\n"
 
 
 def test_graph_compacts_tool_output_before_the_next_model_call(tmp_path: Path) -> None:
@@ -171,7 +635,7 @@ def test_graph_compacts_tool_output_before_the_next_model_call(tmp_path: Path) -
     next_payload = json.loads(str(next_tool_message.content))
     assert "已压缩工具输出" in next_payload["content"]
     assert len(next_payload["content"]) < 100
-    assert len(result["messages"]) <= 7
+    assert len(result["messages"]) <= 8
     assert all(
         "A" * 100
         not in json.loads(str(message.content))["content"]
@@ -227,11 +691,13 @@ def test_graph_retains_the_latest_complete_tool_message_group_over_the_context_l
     ]
 
     assert result["phase"] == "done"
-    assert isinstance(next_request[0], AIMessage)
+    assert isinstance(next_request[0], SystemMessage)
+    assert isinstance(next_request[1], HumanMessage)
+    assert isinstance(next_request[2], AIMessage)
     assert [message.tool_call_id for message in retained_tool_messages] == [
         f"read-{index}" for index in range(24)
     ]
-    assert len(next_request) == 25
+    assert len(next_request) == 27
 
 
 def test_graph_repairs_failed_verification_then_completes(tmp_path: Path) -> None:
@@ -368,6 +834,12 @@ def test_graph_repairs_failed_verification_then_completes(tmp_path: Path) -> Non
     assert source.read_text(encoding="utf-8") == "VALUE = 2\n"
     assert model.ainvoke_configs
     assert all(event["tool"] in {"read_file", "edit_file", "run_verification"} for event in result["tool_events"])
+    first_event = result["tool_events"][0]
+    assert first_event["event_version"] == 1
+    assert first_event["tool_call_id"] == "read-1"
+    assert first_event["permission"] == "read"
+    assert first_event["risk"] == "low"
+    assert first_event["outcome"] == "succeeded"
 
 
 def test_graph_repair_allows_an_edit_after_reading_the_latest_verification_failure(

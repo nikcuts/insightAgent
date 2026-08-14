@@ -308,6 +308,27 @@ def test_sanitizer_redacts_quoted_spaced_and_short_option_cookies() -> None:
     assert "***REDACTED***" in serialized
 
 
+def test_sanitizer_does_not_corrupt_tool_profile_names() -> None:
+    from insightagent.graph.observability import sanitize_for_model_trace_and_persistence
+
+    assert sanitize_for_model_trace_and_persistence("coding-basic") == "coding-basic"
+    assert (
+        sanitize_for_model_trace_and_persistence("--tool-profile coding-basic")
+        == "--tool-profile coding-basic"
+    )
+
+
+def test_sanitizer_preserves_command_structure_inside_source_text() -> None:
+    from insightagent.graph.observability import sanitize_for_model_trace_and_persistence
+
+    source = 'command = "curl -b \'session=secret\'"'
+
+    assert (
+        sanitize_for_model_trace_and_persistence(source)
+        == 'command = "curl -b \'***REDACTED***\'"'
+    )
+
+
 def test_langfuse_callback_proxy_receives_only_sanitized_outputs() -> None:
     from insightagent.graph.observability import SanitizingLangfuseCallback
 

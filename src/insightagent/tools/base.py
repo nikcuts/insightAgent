@@ -28,5 +28,22 @@ def read_workspace_text(context: ToolContext, path: Path) -> str:
 
 
 def should_skip_path(path: Path) -> bool:
-    ignored = {".git", "__pycache__", ".pytest_cache", "node_modules", ".insightagent"}
+    # Keep repository search aligned with snapshot hygiene. Virtualenvs and
+    # build products are implementation dependencies, not agent evidence.
+    ignored = {
+        ".git",
+        ".insightagent",
+        ".hg",
+        ".svn",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        "venv",
+        "node_modules",
+        "dist",
+        "build",
+    }
     return any(part in ignored for part in path.parts)

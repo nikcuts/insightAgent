@@ -1,0 +1,32 @@
+{
+  "experiment": "real_env_calculator_retry",
+  "date": "2026-07-17",
+  "environment": {
+    "dotenv_keys": ["API_KEY", "BASE_URL", "MODEL_ID", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL"],
+    "provider": "siliconflow",
+    "model": "glm-5.2",
+    "workspace_isolation": "/tmp/insightagent-real.4zIB0X"
+  },
+  "task": "Create calculator.py with +, -, *, / and verify 2 + 3 == 5.",
+  "status": "resolved",
+  "result": {
+    "exit_code": 0,
+    "verification_command": "python -c \"from calculator import calculate; r = calculate(2, '+', 3); assert r == 5, r; print('OK:', r)\"",
+    "stdout": "OK: 5",
+    "changed_files": ["calculator.py"],
+    "test_files_modified": false,
+    "iterations": 4,
+    "tool_calls": 4,
+    "wall_time_ms": 27672,
+    "input_tokens": 8251,
+    "output_tokens": 549,
+    "total_tokens": 8800,
+    "failure_kinds": []
+  },
+  "runtime_manifest": "/tmp/insightagent-real.4zIB0X/.insightagent/sessions/manifests/869771e14564afa61679cda3a0782bcbe3bfb8b4dece7c77f6e07cdb985fc5b3.json",
+  "trace": "docs/evidence/real-env-calculator-retry-2026-07-17.jsonl",
+  "notes": [
+    "The first attempt exposed and fixed sanitizer corruption of coding-basic and false workspace diffs from .insightagent session files.",
+    "The successful retry ran in an isolated temporary workspace, not the source checkout."
+  ]
+}

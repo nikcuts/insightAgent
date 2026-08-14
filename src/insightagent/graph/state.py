@@ -11,6 +11,7 @@ from langchain_core.messages import (
     HumanMessage,
     MessageLikeRepresentation,
     RemoveMessage,
+    SystemMessage,
     ToolMessage,
 )
 from langgraph.graph.message import add_messages
@@ -43,19 +44,30 @@ def merge_messages(left: list[AnyMessage], right: list[AnyMessage]) -> list[AnyM
 
 
 def trim_message_prefix(
-    messages: Sequence[BaseMessage], max_messages: int
+    messages: Sequence[BaseMessage],
+    max_messages: int,
+    *,
+    preserve_context_anchors: bool = False,
 ) -> tuple[list[RemoveMessage], list[BaseMessage]]:
-    """裁剪历史前缀，但始终保留最新的完整工具调用消息组。"""
+    """裁剪历史前缀，但始终保留最新工具组和可选的上下文锚点。"""
     if len(messages) <= max_messages:
         return [], list(messages)
     cutoff = len(messages) - max_messages
     while cutoff > 0 and isinstance(messages[cutoff], ToolMessage):
         cutoff -= 1
     removable = messages[:cutoff]
+    anchors: set[str] = set()
+    if preserve_context_anchors:
+        for index, message in enumerate(messages):
+            if isinstance(message, SystemMessage) or (index == 0 and isinstance(message, HumanMessage)):
+                if isinstance(message.id, str) and message.id:
+                    anchors.add(message.id)
     removals = [
         RemoveMessage(id=message_id)
         for message in removable
-        if isinstance((message_id := message.id), str) and message_id
+        if isinstance((message_id := message.id), str)
+        and message_id
+        and message_id not in anchors
     ]
     return removals, list(messages[cutoff:])
 
@@ -82,6 +94,7 @@ class AgentState(TypedDict, total=False):
     phase_history: list[str]
     tool_events: list[dict[str, JSONValue]]
     usage: dict[str, int]
+    run_manifest: dict[str, JSONValue]
     final_answer: str | None
 
 
@@ -107,5 +120,6 @@ def new_turn_update(task: str) -> AgentState:
         "repair_inspected_since_failure": False,
         "phase_history": ["plan"],
         "tool_events": [],
+        "run_manifest": {},
         "final_answer": None,
     }

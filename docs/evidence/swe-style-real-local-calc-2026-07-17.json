@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "case_id": "local_calc_addition",
+  "provider": "siliconflow",
+  "run_mode": "real_model",
+  "baseline_exit_code": 1,
+  "agent_exit_code": 0,
+  "verification_exit_code": 0,
+  "resolved": true,
+  "test_files_changed": [],
+  "source_files_changed": ["calc.py"],
+  "patch_lines_added": 1,
+  "patch_lines_removed": 1,
+  "agent_duration_seconds": 19.106,
+  "verification_duration_seconds": 0.048,
+  "tests_passed": 3,
+  "tool_event_count": 4,
+  "phase_history": ["plan", "inspect", "implement", "verify", "summarize", "done"],
+  "usage": {
+    "input_tokens": 8816,
+    "output_tokens": 256,
+    "total_tokens": 9072
+  },
+  "trace_status": "available",
+  "trace_path": "reports/swe_style/real-local-calc-20260717/local_calc_addition.trace.jsonl",
+  "result_path": "reports/swe_style/real-local-calc-20260717/results.jsonl"
+}

@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "dataset": "official SWE-bench-Lite",
+  "case_id": "pallets__flask-4045",
+  "issue": "Raise error when blueprint name or endpoint contains a dot",
+  "scope": "one real repository case; not a generalization claim",
+  "provider": "openai-compatible",
+  "model": "glm-5.2",
+  "baseline_exit_code": 1,
+  "fail_to_pass_tests": 2,
+  "attempts": [
+    {
+      "run_id": "real-swebench-flask4045-r2-20260717",
+      "status": "agent_error",
+      "root_cause": "provider rejected long historical messages with error 1214",
+      "source_files_changed": [],
+      "trace_status": "available",
+      "usage_total_tokens": 42537
+    },
+    {
+      "run_id": "real-swebench-flask4045-glm-r3-20260717",
+      "status": "agent_error",
+      "root_cause": "model edited the source and passed verification, then repeated inspection until the iteration limit",
+      "source_files_changed": ["src/flask/blueprints.py"],
+      "verification_exit_code": 0,
+      "trace_status": "available",
+      "usage_total_tokens": 135128
+    },
+    {
+      "run_id": "real-swebench-flask4045-glm-r4-20260717",
+      "status": "resolved",
+      "source_files_changed": ["src/flask/blueprints.py"],
+      "test_files_changed": [],
+      "runtime_artifacts_ignored": [".insightagent/sessions/*"],
+      "verification_exit_code": 0,
+      "phase_history": ["plan", "inspect", "implement", "verify", "summarize", "done"],
+      "tool_events": 26,
+      "trace_status": "available",
+      "usage_total_tokens": 136897
+    }
+  ],
+  "counted_as_resolved": true,
+  "report": "reports/swe_style/real-swebench-flask4045-glm-r4-20260717/summary.md",
+  "trace": "reports/swe_style/real-swebench-flask4045-glm-r4-20260717/pallets__flask-4045.trace.jsonl"
+}

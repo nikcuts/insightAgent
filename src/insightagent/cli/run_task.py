@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -41,10 +42,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tool-profile", default="coding-basic", choices=TOOL_PROFILE_CHOICES)
     parser.add_argument("--allowed-tools", action="append")
     parser.add_argument("--enable-mcp-server", action="append")
+    parser.add_argument(
+        "--trust-workspace-mcp",
+        action="store_true",
+        help="Allow workspace/start-directory MCP config files to launch tools.",
+    )
     parser.add_argument("--permission-mode", choices=["read-only", "workspace-write"])
+    parser.add_argument("--approval-mode", choices=["deny", "interrupt"])
+    parser.add_argument("--execution-mode", choices=["host", "sandbox"])
+    parser.add_argument("--sandbox-image")
     parser.add_argument("--language")
     parser.add_argument("--session-id")
     parser.add_argument("--checkpoint-id")
+    parser.add_argument(
+        "--resume-approval",
+        choices=["approve", "deny"],
+        help="Resume a pending approval interrupt for --session-id.",
+    )
     parser.add_argument("--session-dir")
     parser.add_argument("--list-sessions", action="store_true")
     parser.add_argument("--export-transcript")
@@ -73,6 +87,8 @@ def _run(args: argparse.Namespace) -> None:
             print(session_id)
         return
     if args.checkpoint_id is not None:
+        if args.resume_approval is not None:
+            raise ValueError("--resume-approval cannot be combined with --checkpoint-id")
         outcome = run_task(
             task=args.task,
             workspace=workspace,
@@ -86,10 +102,13 @@ def _run(args: argparse.Namespace) -> None:
             no_trace=args.no_trace,
         )
     else:
+        if args.resume_approval is not None and args.session_id is None:
+            raise ValueError("--resume-approval requires --session-id")
         mcp_config = load_mcp_config(
             workspace,
             user_config_home=args.config_home,
             start_dir=start_dir,
+            allow_workspace_config=args.trust_workspace_mcp,
         )
         outcome = run_task(
             task=args.task,
@@ -105,7 +124,17 @@ def _run(args: argparse.Namespace) -> None:
             trace_jsonl=args.trace_jsonl,
             no_trace=args.no_trace,
             mcp_config=mcp_config,
+            resume_value=args.resume_approval,
         )
+    interrupt = _interrupt_payload(outcome.state)
+    if interrupt is not None:
+        print(
+            "approval required; rerun with --session-id "
+            f"{outcome.thread_id} --approval-mode interrupt --resume-approval approve|deny:\n"
+            + json.dumps(interrupt, ensure_ascii=False, indent=2, default=str),
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
     print(outcome.final_answer)
     if args.export_transcript:
         if not outcome.thread_id:
@@ -135,6 +164,9 @@ def _load_config(args: argparse.Namespace, workspace: Path) -> RuntimeConfig:
             "max_output_tokens": args.max_output_tokens,
             "max_wall_seconds": args.max_wall_seconds,
             "permission_mode": args.permission_mode,
+            "approval_mode": args.approval_mode,
+            "execution_mode": args.execution_mode,
+            "sandbox_image": args.sandbox_image,
             "trace_max_chars": args.trace_max_chars,
             "session_dir": args.session_dir,
             "response_language": args.language,
@@ -147,6 +179,16 @@ def _session_dir(config: RuntimeConfig, workspace: Path) -> Path:
         raise ValueError("session_dir must be a non-empty string")
     directory = Path(config.session_dir).expanduser()
     return directory if directory.is_absolute() else workspace / directory
+
+
+def _interrupt_payload(state: object) -> object | None:
+    values = state if isinstance(state, dict) else {}
+    interrupts = values.get("__interrupt__")
+    if not isinstance(interrupts, (list, tuple)) or not interrupts:
+        return None
+    first = interrupts[0]
+    payload = getattr(first, "value", first)
+    return payload if payload is not None else {"type": "approval"}
 
 
 async def _list_sessions(session_dir: Path) -> list[str]:

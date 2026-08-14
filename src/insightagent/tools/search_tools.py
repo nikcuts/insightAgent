@@ -37,11 +37,13 @@ class GrepSearchTool:
     def run(self, arguments: dict[str, Any]) -> str:
         pattern = re.compile(str(arguments["pattern"]))
         glob = str(arguments.get("glob") or "*")
-        max_results = int(arguments.get("max_results", 50))
+        max_results = _optional_limit(arguments.get("max_results"), default=50)
         results: list[str] = []
         for path in sorted(self.context.workspace.rglob("*")):
             if len(results) >= max_results:
                 break
+            if should_skip_path(path):
+                continue
             if not path.is_file():
                 continue
             rel = path.relative_to(self.context.workspace).as_posix()
@@ -75,6 +77,9 @@ def _matches_grep_glob(file_name: str, relative_path: str, pattern: str) -> bool
 def _grep_glob_variants(pattern: str) -> list[str]:
     normalized = pattern.replace("\\", "/")
     variants = [normalized]
+    if normalized.startswith("**/"):
+        # ``**/*.py`` conventionally includes files at the workspace root.
+        variants.append(normalized[3:])
     if not normalized.startswith("**/"):
         variants.append(f"**/{normalized}")
     if "/**/" in normalized:
@@ -109,7 +114,7 @@ class GlobSearchTool:
 
     def run(self, arguments: dict[str, Any]) -> str:
         pattern = str(arguments["pattern"])
-        max_results = int(arguments.get("max_results", 100))
+        max_results = _optional_limit(arguments.get("max_results"), default=100)
         results: list[str] = []
         for path in sorted(self.context.workspace.rglob("*")):
             if len(results) >= max_results:
@@ -121,3 +126,10 @@ class GlobSearchTool:
                 continue
             results.append(relative_path)
         return "\n".join(results) if results else "no matches"
+
+
+def _optional_limit(value: object, *, default: int) -> int:
+    """Normalize nullable JSON optional limits without weakening the cap."""
+    if value is None:
+        return default
+    return max(0, int(value))

@@ -9,7 +9,12 @@ import pytest
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, ConfigDict
 
-from insightagent.graph.contracts import ContractViolation, TaskContract, extract_task_contract
+from insightagent.graph.contracts import (
+    ContractViolation,
+    TaskContract,
+    command_matches_required,
+    extract_task_contract,
+)
 from insightagent.graph.tools import (
     ContractAwareToolInvoker,
     WorkspaceChanges,
@@ -103,6 +108,30 @@ def test_repository_repair_contract_rejects_invalid_tool_actions(
             changed_files=[],
             verification_failed=False,
         )
+
+
+def test_repository_repair_contract_parses_inline_verification_prose() -> None:
+    contract = extract_task_contract(
+        "SWE-bench repository repair task. "
+        "Run this exact verification command before finalizing: "
+        ".venv/bin/python -m pytest -q tests/test_calc.py. First inspect the failure."
+    )
+
+    assert contract.expected_verification_command == ".venv/bin/python -m pytest -q tests/test_calc.py"
+    assert command_matches_required(
+        ".venv/bin/python -m pytest -q tests/test_calc.py",
+        contract.expected_verification_command,
+    )
+
+
+def test_contract_does_not_treat_verification_test_paths_as_fail_to_pass() -> None:
+    contract = extract_task_contract(
+        "SWE-bench repository repair task. "
+        "Run this exact verification command before finalizing: "
+        "python -m pytest tests/test_calc.py tests/graph/test_runner.py"
+    )
+
+    assert contract.failing_test_files == ()
 
 
 def test_repository_repair_contract_enforces_test_read_patch_and_reinspection_order() -> None:
@@ -810,3 +839,16 @@ def test_contract_aware_invoker_rejects_side_effects_with_existing_symlinks(
         assert original.read_text(encoding="utf-8") == "VALUE = 1\n"
 
     asyncio.run(scenario())
+
+
+def test_repository_contract_rejects_shell_source_inspection() -> None:
+    contract = _repair_contract()
+
+    with pytest.raises(ContractViolation, match="use read_file"):
+        contract.validate_before_tool(
+            "execute_command",
+            {"command": "sed -n '1,80p' src/insightagent/graph/runner.py"},
+            inspected_files=["tests/test_calc.py"],
+            changed_files=[],
+            verification_failed=False,
+        )

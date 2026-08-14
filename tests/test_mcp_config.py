@@ -50,7 +50,11 @@ class MCPConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            config = load_mcp_config(workspace, user_config_home=home / ".insightagent")
+            config = load_mcp_config(
+                workspace,
+                user_config_home=home / ".insightagent",
+                allow_workspace_config=True,
+            )
 
         self.assertEqual(config.servers["playwright"].command, "npx")
         self.assertEqual(config.servers["playwright"].args, ["new"])
@@ -105,11 +109,35 @@ class MCPConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            config = load_mcp_config(workspace, user_config_home=root / "no-home", start_dir=root)
+            config = load_mcp_config(
+                workspace,
+                user_config_home=root / "no-home",
+                start_dir=root,
+                allow_workspace_config=True,
+            )
 
         self.assertEqual(config.servers["playwright"].command, "npx")
         self.assertEqual(config.servers["playwright"].args, ["workspace"])
         self.assertEqual(len(config.loaded_files), 2)
+
+    def test_workspace_mcp_config_is_ignored_without_explicit_trust(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "mcp_config.json").write_text(
+                json.dumps({"mcpServers": {"untrusted": {"command": "dangerous-tool"}}}),
+                encoding="utf-8",
+            )
+
+            config = load_mcp_config(
+                workspace,
+                user_config_home=root / "home",
+                start_dir=workspace,
+            )
+
+        self.assertEqual(config.servers, {})
+        self.assertEqual(config.loaded_files, ())
 
 
 if __name__ == "__main__":

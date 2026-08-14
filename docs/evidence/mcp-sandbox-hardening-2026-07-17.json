@@ -1,0 +1,15 @@
+{
+  "experiment": "mcp_trust_and_sandbox_fail_closed",
+  "date": "2026-07-17",
+  "command": "uv run pytest -q tests/test_mcp_config.py tests/graph/test_tools.py::test_sandbox_mode_fails_closed_when_docker_is_unavailable",
+  "status": "passed",
+  "assertions": [
+    "workspace and start-directory MCP config is ignored without explicit trust",
+    "sandbox mode returns sandbox_unavailable when Docker is absent",
+    "host execution is not attempted after sandbox provisioning failure"
+  ],
+  "limitations": [
+    "Docker path was not executed in CI; image signing and runtime attestation remain open",
+    "explicit --trust-workspace-mcp is a development escape hatch, not an administrator allowlist"
+  ]
+}

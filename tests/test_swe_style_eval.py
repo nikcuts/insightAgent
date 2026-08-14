@@ -157,6 +157,37 @@ class SweStyleEvalTests(unittest.TestCase):
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("FAILED", result.stderr)
 
+    def test_all_local_cases_have_failing_baselines(self) -> None:
+        cases = load_cases(DATASET)
+
+        self.assertEqual([case.id for case in cases], [
+            "local_calc_addition",
+            "local_slugify_trim",
+            "local_config_deep_merge",
+            "local_json_lines_blank",
+        ])
+        with tempfile.TemporaryDirectory() as directory:
+            for case in cases:
+                workspace = prepare_workspace(case, Path(directory) / "runs", case.id)
+                result = run_command(case.test_command, cwd=workspace, timeout_seconds=10)
+                self.assertNotEqual(result.exit_code, 0, case.id)
+
+    def test_run_command_exposes_src_layout_to_checkout_python(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "src" / "checkout_pkg"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("VALUE = 42\n", encoding="utf-8")
+
+            result = run_command(
+                'python -c "import checkout_pkg; print(checkout_pkg.VALUE)"',
+                cwd=root,
+                timeout_seconds=10,
+            )
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "42")
+
     def test_dry_run_records_baseline_without_calling_provider(self) -> None:
         case = load_cases(DATASET)[0]
         with tempfile.TemporaryDirectory() as directory:

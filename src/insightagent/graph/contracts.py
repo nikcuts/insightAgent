@@ -65,6 +65,11 @@ class TaskContract:
 
         command = _string_argument(arguments, "command")
         if tool_name == "execute_command":
+            if _looks_like_source_inspection(command):
+                raise ContractViolation(
+                    "Tool contract violation: use read_file, grep_search, or parse_ast for source inspection; "
+                    "execute_command is reserved for the declared verification command."
+                )
             if not self.expected_verification_command or not command_matches_required(
                 command, self.expected_verification_command
             ):
@@ -206,10 +211,19 @@ def _is_verification_tool(tool_name: str) -> bool:
 
 
 def _extract_failing_test_files(task: str) -> tuple[str, ...]:
+    # Do not infer fail-to-pass tests from the verification command itself:
+    # repository-wide commands often mention many unrelated test modules.
+    marker = re.search(
+        r"(?:fail[- ]to[- ]pass tests?|failing tests?|失败测试|验收测试)\s*:\s*([^\r\n]+)",
+        task,
+        re.IGNORECASE,
+    )
+    if marker is None:
+        return ()
     files: list[str] = []
     seen: set[str] = set()
     pattern = r"([A-Za-z0-9_./\\-]*test[A-Za-z0-9_./\\-]*\.py)(?:::[A-Za-z0-9_./\\\[\]-]+)*"
-    for match in re.finditer(pattern, task):
+    for match in re.finditer(pattern, marker.group(1)):
         path = _normalize_path(match.group(1))
         if path and path not in seen:
             seen.add(path)
@@ -221,9 +235,32 @@ def _extract_expected_verification_command(task: str) -> str | None:
     for pattern in _EXACT_VERIFICATION_PATTERNS:
         match = pattern.search(task)
         if match:
-            command = match.group(1).strip().strip("`").strip()
+            command = _trim_verification_command(match.group(1))
             return command or None
     return None
+
+
+def _trim_verification_command(raw: str) -> str:
+    """Extract a command when task prose continues on the same line.
+
+    Task authors frequently write ``command. Then inspect ...`` instead of
+    placing the command on its own line. A strict contract must still compare
+    the command itself, while preserving dots in paths and Python selectors.
+    Inline code spans are preferred; otherwise split only at a sentence dot
+    followed by an obvious prose transition.
+    """
+    value = raw.strip()
+    inline = re.match(r"^`([^`]+)`", value)
+    if inline:
+        return inline.group(1).strip()
+    value = re.split(
+        r"\.\s+(?=(?:first|then|before|after|please|run|先|然后|随后|再|并|请)\b)",
+        value,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    value = re.split(r"。\s*(?=(?:先|然后|随后|再|并|请)\b)", value, maxsplit=1)[0]
+    return value.strip().strip("`").strip().rstrip("。")
 
 
 def _requires_repository_inspection(task: str) -> bool:
@@ -247,6 +284,17 @@ def _adds_unrequested_optional_entrypoint(task: str, arguments: Mapping[str, obj
         or re.search(r"--[A-Za-z0-9][A-Za-z0-9_-]*", task) is not None
     )
     return not requested
+
+
+def _looks_like_source_inspection(command: str) -> bool:
+    """Detect shell-based source reads that bypass bounded inspection tools."""
+    lowered = command.lower()
+    if re.search(r"(^|[;&|]\s*)(?:cat|sed|awk|head|tail)\b", lowered):
+        return True
+    return bool(
+        re.search(r"\bpython(?:3)?\s+-c\b", lowered)
+        and re.search(r"(?:open\(|read_text\(|\.read\()", lowered)
+    )
 
 
 def _string_argument(arguments: Mapping[str, object], name: str) -> str:

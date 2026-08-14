@@ -166,6 +166,62 @@ def test_graph_runner_persists_a_turn_and_returns_checkpoint(
     asyncio.run(scenario())
 
 
+def test_graph_runner_resumes_a_persisted_tool_approval(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from insightagent.graph.observability import GraphObservability
+    from insightagent.graph.runner import GraphRunner
+
+    target = tmp_path / "note.txt"
+    target.write_text("before", encoding="utf-8")
+    model = ScriptedRunnable(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "edit_file",
+                        "args": {"path": "note.txt", "old": "before", "new": "after"},
+                        "id": "runner-approval-1",
+                    }
+                ],
+            ),
+            AIMessage(content="已完成修改。"),
+        ]
+    )
+    monkeypatch.setattr("insightagent.graph.runner.build_chat_model", lambda _config, _tools: model)
+    monkeypatch.setattr(
+        "insightagent.graph.runner.build_observability",
+        lambda **_kwargs: GraphObservability(callbacks=[], enabled=False),
+    )
+
+    async def scenario() -> None:
+        async with GraphRunner(
+            config=RuntimeConfig(approval_mode="interrupt"),
+            workspace=tmp_path,
+            session_dir=tmp_path / "sessions",
+            tool_profile="coding-basic",
+            allowed_tools=None,
+            enabled_mcp_servers=set(),
+            trace_jsonl=None,
+            no_trace=True,
+        ) as runner:
+            paused = await runner.run_turn("修改 note.txt", session_id="approval-runner")
+            assert paused.state.get("__interrupt__")
+            assert paused.state["run_manifest"]["status"] == "paused"
+            assert target.read_text(encoding="utf-8") == "before"
+
+            completed = await runner.resume_turn("approval-runner", "approve")
+            assert completed.state["phase"] == "done"
+            assert target.read_text(encoding="utf-8") == "after"
+            manifest = completed.state["run_manifest"]
+            assert manifest["status"] == "completed"
+            assert manifest["run_id"] == paused.state["run_manifest"]["run_id"]
+            assert any(item.get("decision") == "approve" for item in manifest["approval_history"])
+
+    asyncio.run(scenario())
+
+
 def test_graph_runner_rejects_selected_mcp_servers_that_fail_to_start(
     monkeypatch, tmp_path: Path
 ) -> None:

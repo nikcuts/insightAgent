@@ -81,6 +81,9 @@ def build_graph(services: GraphServices, checkpointer: Any | None = None):
     graph.add_node("summarize", summarize_node)
     graph.add_node("action_required", action_node)
     graph.add_node("fail", fail_node)
+    # Checkpoint-only node used by the runner to persist run manifests without
+    # re-entering the model/tool loop.
+    graph.add_node("record_manifest", lambda _state: {})
 
     graph.add_edge(START, "prepare_task")
     graph.add_edge("prepare_task", "inject_repository_snapshot")
@@ -99,7 +102,12 @@ def build_graph(services: GraphServices, checkpointer: Any | None = None):
     graph.add_conditional_edges(
         "execute_tools",
         lambda state: route_after_tools(state, services),
-        {"call_model": "trim_context", "repair": "repair", "fail": "fail"},
+        {
+            "call_model": "trim_context",
+            "repair": "repair",
+            "summarize": "summarize",
+            "fail": "fail",
+        },
     )
     graph.add_conditional_edges(
         "repair", route_after_repair, {"call_model": "trim_context", "fail": "fail"}
